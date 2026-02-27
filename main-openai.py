@@ -168,7 +168,9 @@ POOL = KeyPool(KEYS_LIST)
 # Upstream streaming
 # -------------------------
 async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], content: Optional[bytes], key_state: KeyState, timeout: int = 300):
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
+    transport = httpx.AsyncHTTPTransport(verify=False)
+    async with httpx.AsyncClient(timeout=timeout, transport=transport, proxy=VPN_PROXY_URL if VPN_PROXY_URL else None) as client:
         try:
             async with client.stream(method, url, headers=headers, content=content) as upstream:
                 if upstream.status_code >= 400:
@@ -181,7 +183,8 @@ async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], c
                 async for chunk in upstream.aiter_bytes():
                     if chunk:
                         yield chunk
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            print(f"Request Error (Stream): {e}")
             key_state.mark_failure()
             raise
 
@@ -190,14 +193,22 @@ async def try_forward_to_upstream(method: str, url: str, headers: Dict[str, str]
         gen = stream_from_upstream(method, url, headers, content, key_state, timeout=timeout)
         return StreamingResponse(gen, media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
     else:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, headers=headers, content=content)
-            if resp.status_code in (429, 403, 500, 502, 503):
+        # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
+        transport = httpx.AsyncHTTPTransport(verify=False)
+        async with httpx.AsyncClient(timeout=timeout, transport=transport, proxy=VPN_PROXY_URL if VPN_PROXY_URL else None) as client:
+            try:
+                resp = await client.request(method, url, headers=headers, content=content)
+                if resp.status_code in (429, 403, 500, 502, 503):
+                    key_state.mark_failure()
+                else:
+                    key_state.mark_success()
+                media_type = resp.headers.get("content-type", "application/json")
+                return Response(content=resp.content, status_code=resp.status_code, media_type=media_type)
+            except httpx.RequestError as e:
+                print(f"Request Error: {e}")
                 key_state.mark_failure()
-            else:
-                key_state.mark_success()
-            media_type = resp.headers.get("content-type", "application/json")
-            return Response(content=resp.content, status_code=resp.status_code, media_type=media_type)
+                # Return a 502 Bad Gateway error instead of crashing
+                return JSONResponse(status_code=502, content={"error": f"Upstream connection failed: {str(e)}"})
 
 # -------------------------
 # Map incoming path to upstream
@@ -224,10 +235,22 @@ def detect_stream_from_request(content_bytes: Optional[bytes], query_params: Dic
     return False
 
 # -------------------------
+# Health Check
+# -------------------------
+@APP.get("/")
+@APP.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "gemini-proxy", "keys_loaded": len(KEYS_LIST)}
+
+# -------------------------
 # Catch-all proxy
 # -------------------------
 @APP.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH","OPTIONS"])
 async def catch_all(request: Request, full_path: str):
+    # Skip health check paths if they matched catch-all (though specific routes take precedence)
+    if full_path in ("", "health"):
+        return {"status": "ok"}
+        
     upstream_url = map_incoming_to_upstream(full_path)
     content = await request.body()
     params = dict(request.query_params)
