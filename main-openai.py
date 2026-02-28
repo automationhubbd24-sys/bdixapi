@@ -305,6 +305,51 @@ async def validate_api_key(request: Request, call_next):
 # Config
 # -------------------------
 VPN_PROXY_URL = os.getenv("VPN_PROXY_URL", "http://brd-customer-hl_e956420e-zone-data_center:mwiju3dghh0n@brd.superproxy.io:33335")  # proxy to bypass regional restrictions
+
+def get_rotating_proxy_url():
+    """
+    Injects a random session ID into the Bright Data proxy URL to ensure IP rotation per request.
+    Format: user-session-RANDOM:pass@host:port
+    """
+    if not VPN_PROXY_URL or "brd.superproxy.io" not in VPN_PROXY_URL:
+        return VPN_PROXY_URL
+    
+    try:
+        # Parse the URL
+        # Expected format: http://USER:PASS@HOST:PORT
+        # We need to insert -session-RANDOM into the USER part
+        from urllib.parse import urlparse, urlunparse
+        
+        parsed = urlparse(VPN_PROXY_URL)
+        if not parsed.username:
+            return VPN_PROXY_URL
+            
+        import random
+        import string
+        session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        
+        # Check if session is already present (to avoid double adding)
+        if "-session-" in parsed.username:
+            # Replace existing session? Or just append? Bright data usually takes last one or specific format.
+            # Safer to assume user provided clean base credentials without session, or we append if not present.
+            # If present, let's assume user configured it static intentionaly, OR we replace it.
+            # Let's replace it for rotation.
+            base_user = parsed.username.split("-session-")[0]
+            new_user = f"{base_user}-session-{session_id}"
+        else:
+            new_user = f"{parsed.username}-session-{session_id}"
+            
+        # Reconstruct URL
+        # urlunparse needs (scheme, netloc, path, params, query, fragment)
+        # netloc includes user:pass@host:port
+        new_netloc = f"{new_user}:{parsed.password}@{parsed.hostname}:{parsed.port}"
+        
+        return urlunparse((parsed.scheme, new_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        
+    except Exception as e:
+        print(f"Error rotating proxy session: {e}")
+        return VPN_PROXY_URL
+
 KEYS_FILE = "api_keys.txt" # api keys, one per line (fallback)
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "changeme_local_only")
 UPSTREAM_BASE_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
@@ -568,7 +613,8 @@ async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], c
     
     # Fallback to configured VPN/Data Center proxy if no free proxy found
     if not proxy_url and VPN_PROXY_URL:
-        proxy_url = VPN_PROXY_URL
+        # Use our new dynamic rotation logic
+        proxy_url = get_rotating_proxy_url()
 
     # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
     transport = httpx.AsyncHTTPTransport(verify=False)
@@ -616,7 +662,8 @@ async def try_forward_to_upstream(method: str, url: str, headers: Dict[str, str]
         
         # Fallback
         if not proxy_url and VPN_PROXY_URL:
-            proxy_url = VPN_PROXY_URL
+            # Use our new dynamic rotation logic
+            proxy_url = get_rotating_proxy_url()
 
         # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
         transport = httpx.AsyncHTTPTransport(verify=False)
