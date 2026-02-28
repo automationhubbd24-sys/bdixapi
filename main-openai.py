@@ -622,6 +622,13 @@ POOL = KeyPool(KEYS_DATA)
 async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], content: Optional[bytes], key_state: KeyState, timeout: int = 300):
     # Determine which proxy to use
     proxy_url = None
+    
+    # Only use proxy for actual LLM calls (chat/completions), not for model listing
+    # But since stream_from_upstream is mostly used for chat/completions, we assume we need proxy here.
+    # However, let's double check if we can skip proxy for non-critical calls?
+    # Actually, stream_from_upstream is invoked by try_forward_to_upstream when is_stream=True.
+    # And try_forward_to_upstream is called by /chat/completions mostly.
+    
     if USE_FREE_PROXY and FREE_PROXY_LIB_INSTALLED:
         proxy_url = await PROXY_MANAGER.get_proxy()
     
@@ -633,6 +640,7 @@ async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], c
     # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
     transport = httpx.AsyncHTTPTransport(verify=False)
     try:
+        # If proxy_url is None, httpx will use direct connection (or system proxy if env vars set)
         async with httpx.AsyncClient(timeout=timeout, transport=transport, proxy=proxy_url) as client:
             try:
                 async with client.stream(method, url, headers=headers, content=content) as upstream:
@@ -664,20 +672,25 @@ async def stream_from_upstream(method: str, url: str, headers: Dict[str, str], c
             PROXY_MANAGER.mark_bad(proxy_url)
         raise
 
-async def try_forward_to_upstream(method: str, url: str, headers: Dict[str, str], content: Optional[bytes], is_stream: bool, key_state: KeyState, timeout: int = 300):
+async def try_forward_to_upstream(method: str, url: str, headers: Dict[str, str], content: Optional[bytes], is_stream: bool, key_state: KeyState, timeout: int = 300, use_proxy: bool = True):
     if is_stream:
         gen = stream_from_upstream(method, url, headers, content, key_state, timeout=timeout)
         return StreamingResponse(gen, media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
     else:
         # Determine which proxy to use
         proxy_url = None
-        if USE_FREE_PROXY and FREE_PROXY_LIB_INSTALLED:
-            proxy_url = await PROXY_MANAGER.get_proxy()
         
-        # Fallback
-        if not proxy_url and VPN_PROXY_URL:
-            # Use our new dynamic rotation logic
-            proxy_url = get_rotating_proxy_url()
+        if use_proxy:
+            if USE_FREE_PROXY and FREE_PROXY_LIB_INSTALLED:
+                proxy_url = await PROXY_MANAGER.get_proxy()
+            
+            # Fallback
+            if not proxy_url and VPN_PROXY_URL:
+                # Use our new dynamic rotation logic
+                proxy_url = get_rotating_proxy_url()
+        else:
+            # Explicitly disable proxy for this request
+            proxy_url = None
 
         # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
         transport = httpx.AsyncHTTPTransport(verify=False)
@@ -838,7 +851,8 @@ async def catch_all(request: Request, full_path: str):
         if not any(k.lower()=="content-type" for k in headers):
             ct = request.headers.get("content-type")
             headers["Content-Type"] = ct if ct else "application/json"
-        return await try_forward_to_upstream(request.method, upstream_url, headers, content, is_stream, key_state)
+        # Disable proxy for models endpoint
+        return await try_forward_to_upstream(request.method, upstream_url, headers, content, is_stream, key_state, use_proxy=False)
 
     # Normal round-robin keys
     tried: List[str] = []
