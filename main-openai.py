@@ -187,7 +187,7 @@ HTML_TEMPLATE = """
 # FREE PROXY ROTATION LOGIC (START)
 # To remove: Delete this section and revert usage in stream_from_upstream/try_forward_to_upstream
 # ==========================================
-USE_FREE_PROXY = os.getenv("USE_FREE_PROXY", "True").lower() == "true"  # Set to False to disable free proxy rotation
+USE_FREE_PROXY = False  # Disabled as requested by user
 ASIAN_COUNTRIES = ['BD', 'IN', 'VN', 'NP', 'PK', 'JP', 'MY', 'ID', 'TH', 'PH', 'SG']
 
 try:
