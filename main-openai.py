@@ -413,7 +413,12 @@ def load_keys_from_supabase() -> List[Dict[str, Any]]:
         # Select key and usage stats
         # Assuming table has columns: key, usage_count_day, last_used_at
         # If columns don't exist, we'll handle it gracefully
-        response = supabase.table("gemini_api_keys").select("key, usage_count_day, last_used_at").eq("is_active", True).execute()
+        try:
+            response = supabase.table("gemini_api_keys").select("key, usage_count_day, last_used_at").eq("is_active", True).execute()
+        except Exception as e:
+            # Fallback if columns don't exist: just select keys
+            print(f"Warning: Usage columns missing in Supabase ({e}). Loading keys only.")
+            response = supabase.table("gemini_api_keys").select("key").eq("is_active", True).execute()
         
         keys_data = []
         for item in response.data:
