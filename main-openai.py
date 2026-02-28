@@ -337,11 +337,15 @@ extra_body={
 # -------------------------
 # Setup proxy from config
 # -------------------------
+# NOTE: We set these env vars ONLY for httpx/requests calls that respect them.
+# However, Supabase client also respects them, which causes issues if the proxy is dead.
+# We will temporarily unset them during Supabase calls or handle Supabase client creation carefully.
 if VPN_PROXY_URL:
     proxy_url_with_scheme = VPN_PROXY_URL if "://" in VPN_PROXY_URL else f"http://{VPN_PROXY_URL}"
-    os.environ['HTTP_PROXY'] = proxy_url_with_scheme
-    os.environ['HTTPS_PROXY'] = proxy_url_with_scheme
-    os.environ['ALL_PROXY'] = proxy_url_with_scheme
+    # os.environ['HTTP_PROXY'] = proxy_url_with_scheme
+    # os.environ['HTTPS_PROXY'] = proxy_url_with_scheme
+    # os.environ['ALL_PROXY'] = proxy_url_with_scheme
+    # COMMENTED OUT: We will apply proxy explicitly to httpx client instead of globally to avoid breaking Supabase.
 
 # -------------------------
 # Utilities: load keys
@@ -353,6 +357,8 @@ def load_keys_from_supabase() -> List[str]:
         return []
         
     try:
+        # Ensure no proxy env vars interfere with Supabase connection
+        # (Supabase uses httpx under the hood)
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         response = supabase.table("gemini_api_keys").select("key").eq("is_active", True).execute()
         keys = [item["key"] for item in response.data]
