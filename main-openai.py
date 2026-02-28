@@ -312,6 +312,12 @@ BACKOFF_MIN = 5
 BACKOFF_MAX = 600
 DEBUG = False
 
+# Rate Limits (Gemini Free Tier Defaults)
+# RPM: 15 requests per minute
+# RPD: 1500 requests per day
+DEFAULT_RPM = 5  # Strictly limited to 5 RPM as requested
+DEFAULT_RPD = 20 # Strictly limited to 20 RPD as requested
+
 # Supabase Config
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -400,14 +406,48 @@ class KeyState:
         self.banned_until: float = 0.0
         self.success: int = 0
         self.fail: int = 0
+        
+        # Rate Limiting
+        self.rpm_limit = DEFAULT_RPM
+        self.rpd_limit = DEFAULT_RPD
+        
+        self.usage_minute = 0
+        self.minute_start_time = time.time()
+        
+        self.usage_day = 0
+        self.day_start_time = time.time() # This should align with UTC midnight ideally, but rolling 24h for now
 
     def is_available(self) -> bool:
-        return time.monotonic() >= self.banned_until
+        now = time.time()
+        
+        # Check Backoff
+        if now < self.banned_until:
+            return False
+            
+        # Check/Reset Minute Limit
+        if now - self.minute_start_time >= 60:
+            self.usage_minute = 0
+            self.minute_start_time = now
+            
+        if self.usage_minute >= self.rpm_limit:
+            return False
+            
+        # Check/Reset Day Limit
+        if now - self.day_start_time >= 86400: # 24 hours
+            self.usage_day = 0
+            self.day_start_time = now
+            
+        if self.usage_day >= self.rpd_limit:
+            return False
+            
+        return True
 
     def mark_success(self) -> None:
         self.backoff = 0.0
         self.banned_until = 0.0
         self.success += 1
+        self.usage_minute += 1
+        self.usage_day += 1
 
     def mark_failure(self) -> None:
         if self.backoff <= 0:
@@ -428,6 +468,9 @@ class KeyPool:
     async def next_available(self) -> Optional[KeyState]:
         async with self.lock:
             start = self.idx
+            attempts = 0
+            # Try to find a key that is not rate-limited or banned
+            # We iterate up to N times to check all keys
             for i in range(self.n):
                 j = (start + i) % self.n
                 st = self.states[j]
@@ -438,12 +481,28 @@ class KeyPool:
 
     def status(self) -> List[Dict[str, Any]]:
         now = time.monotonic()
+        sys_now = time.time()
         out: List[Dict[str, Any]] = []
         for s in self.states:
+            # Calculate time until limits reset
+            rpm_reset_in = max(0, 60 - (sys_now - s.minute_start_time))
+            rpd_reset_in = max(0, 86400 - (sys_now - s.day_start_time))
+            
+            is_rate_limited = s.usage_minute >= s.rpm_limit or s.usage_day >= s.rpd_limit
+            status_msg = "Ready"
+            if s.banned_until > now:
+                status_msg = f"Backoff ({int(s.banned_until - now)}s)"
+            elif s.usage_minute >= s.rpm_limit:
+                status_msg = f"RPM Limit ({int(rpm_reset_in)}s)"
+            elif s.usage_day >= s.rpd_limit:
+                status_msg = "Daily Limit"
+
             out.append({
                 "key_preview": s.key[:8] + "..." if len(s.key) > 8 else s.key,
                 "available_in": max(0, round(s.banned_until - now, 2)),
-                "backoff": s.backoff,
+                "rpm_usage": f"{s.usage_minute}/{s.rpm_limit}",
+                "rpd_usage": f"{s.usage_day}/{s.rpd_limit}",
+                "status": status_msg,
                 "success": s.success,
                 "fail": s.fail,
             })
