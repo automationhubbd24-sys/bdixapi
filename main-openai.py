@@ -356,52 +356,59 @@ if VPN_PROXY_URL:
 # -------------------------
 # Utilities: load keys
 # -------------------------
-def load_keys_from_supabase() -> List[str]:
-    """Load keys from Supabase database."""
+def load_keys_from_supabase() -> List[Dict[str, Any]]:
+    """Load keys and their usage stats from Supabase database."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("Supabase URL or Key not set. Falling back to file.")
         return []
         
     try:
         # Ensure no proxy env vars interfere with Supabase connection
-        # (Supabase uses httpx under the hood)
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        response = supabase.table("gemini_api_keys").select("key").eq("is_active", True).execute()
-        keys = [item["key"] for item in response.data]
-        if not keys:
+        # Select key and usage stats
+        # Assuming table has columns: key, usage_count_day, last_used_at
+        # If columns don't exist, we'll handle it gracefully
+        response = supabase.table("gemini_api_keys").select("key, usage_count_day, last_used_at").eq("is_active", True).execute()
+        
+        keys_data = []
+        for item in response.data:
+            keys_data.append({
+                "key": item["key"],
+                "usage_day": item.get("usage_count_day", 0) or 0,
+                "last_used": item.get("last_used_at", "")
+            })
+            
+        if not keys_data:
              print("No active keys found in Supabase.")
-        return keys
+        return keys_data
     except Exception as e:
         print(f"Error loading keys from Supabase: {e}")
         return []
 
-def load_keys_from_file(path: str) -> List[str]:
+def load_keys_from_file(path: str) -> List[Dict[str, Any]]:
     if not os.path.exists(path):
-        # raise FileNotFoundError(f"API keys file not found: {path}")
         return []
     with open(path, "r", encoding="utf-8") as f:
-        keys = [line.strip() for line in f if line.strip()]
-    # if not keys:
-    #     raise RuntimeError("No API keys found in file.")
-    return keys
+        # File only has keys, so init usage to 0
+        return [{"key": line.strip(), "usage_day": 0} for line in f if line.strip()]
 
-# Load keys from Supabase first, then fallback to file
-KEYS_LIST = load_keys_from_supabase()
-if not KEYS_LIST:
+# Load keys
+KEYS_DATA = load_keys_from_supabase()
+if not KEYS_DATA:
     print("Trying to load keys from file...")
-    KEYS_LIST = load_keys_from_file(KEYS_FILE)
+    KEYS_DATA = load_keys_from_file(KEYS_FILE)
 
-if not KEYS_LIST:
+if not KEYS_DATA:
     raise RuntimeError("No API keys found in Supabase or file.")
 
-print(f"Loaded {len(KEYS_LIST)} keys.")
+print(f"Loaded {len(KEYS_DATA)} keys.")
 
 # -------------------------
 # Key state & pool
 # -------------------------
 class KeyState:
-    def __init__(self, key: str):
-        self.key: str = key
+    def __init__(self, key_data: Dict[str, Any]):
+        self.key: str = key_data["key"]
         self.backoff: float = 0.0
         self.banned_until: float = 0.0
         self.success: int = 0
@@ -414,8 +421,12 @@ class KeyState:
         self.usage_minute = 0
         self.minute_start_time = time.time()
         
-        self.usage_day = 0
-        self.day_start_time = time.time() # This should align with UTC midnight ideally, but rolling 24h for now
+        # Initialize usage from DB
+        self.usage_day = key_data.get("usage_day", 0)
+        
+        # Reset day count if last used was yesterday (simple check)
+        # In production, check 'last_used_at' date vs today
+        self.day_start_time = time.time() 
 
     def is_available(self) -> bool:
         now = time.time()
@@ -432,7 +443,8 @@ class KeyState:
         if self.usage_minute >= self.rpm_limit:
             return False
             
-        # Check/Reset Day Limit
+        # Check/Reset Day Limit (Simple rolling 24h reset for in-memory)
+        # Ideally we sync this reset with DB
         if now - self.day_start_time >= 86400: # 24 hours
             self.usage_day = 0
             self.day_start_time = now
@@ -448,6 +460,40 @@ class KeyState:
         self.success += 1
         self.usage_minute += 1
         self.usage_day += 1
+        
+        # Async update to Supabase (Fire and Forget)
+        # We use a background task to avoid blocking the response
+        asyncio.create_task(self.update_usage_in_db())
+
+    async def update_usage_in_db(self):
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return
+        try:
+            # We need a new client for async context or careful usage
+            # For simplicity/safety in this script, we can run sync client in thread
+            # OR just skip for now to keep latency low.
+            # Ideally: Update usage_count_day = self.usage_day, last_used_at = now()
+            
+            # Optimization: Don't write to DB on EVERY request if high volume.
+            # Maybe every 5 or 10 requests?
+            if self.usage_day % 5 != 0: 
+                return
+
+            def _update():
+                try:
+                    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+                    client.table("gemini_api_keys").update({
+                        "usage_count_day": self.usage_day,
+                        "last_used_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                    }).eq("key", self.key).execute()
+                except Exception as e:
+                    print(f"DB Update Error: {e}")
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _update)
+            
+        except Exception:
+            pass
 
     def mark_failure(self) -> None:
         if self.backoff <= 0:
@@ -459,8 +505,8 @@ class KeyState:
 
 
 class KeyPool:
-    def __init__(self, keys: List[str]):
-        self.states: List[KeyState] = [KeyState(k) for k in keys]
+    def __init__(self, keys_data: List[Dict[str, Any]]):
+        self.states: List[KeyState] = [KeyState(k) for k in keys_data]
         self.n: int = len(self.states)
         self.idx: int = 0
         self.lock = asyncio.Lock()
@@ -707,6 +753,23 @@ async def catch_all(request: Request, full_path: str):
     # /models -> random available key
     p_normal = full_path[len("v1/"):] if full_path.startswith("v1/") else full_path
     if p_normal == "models" or p_normal.startswith("models/"):
+        # Intercept /models response to return custom model name
+        if request.method == "GET":
+            return JSONResponse({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "salesmanchatbot-pro",
+                        "object": "model",
+                        "created": 1677610602,
+                        "owned_by": "salesmenchatbot-ai",
+                        "permission": [],
+                        "root": "salesmanchatbot-pro",
+                        "parent": None
+                    }
+                ]
+            })
+            
         avail = [s for s in POOL.states if s.is_available()]
         key_state = random.choice(avail) if avail else min(POOL.states, key=lambda s: s.banned_until)
         headers = dict(incoming_headers)
@@ -731,16 +794,24 @@ async def catch_all(request: Request, full_path: str):
 
         # Правильная вставка thinking chain, если включено
         body_to_send = content
-        if ENABLE_THINKING_CHAIN and content:
+        if content:
             try:
                 body_json = json.loads(content.decode())
+                
+                # Model Mapping: salesmanchatbot-pro -> gemini-2.5-flash
+                if "model" in body_json:
+                    if body_json["model"] == "salesmanchatbot-pro":
+                        body_json["model"] = "gemini-2.5-flash" # Map to actual backend model
+                
                 # добавить thinking_config только если его нет
-                if "extra_body" not in body_json or "google" not in body_json.get("extra_body", {}):
-                    body_json.setdefault("extra_body", {}).setdefault("google", {}).setdefault("thinking_config", {
-                        "thinking_budget": 32768,
-                        "include_thoughts": True
-                    })
-                    body_to_send = json.dumps(body_json).encode("utf-8")
+                if ENABLE_THINKING_CHAIN:
+                    if "extra_body" not in body_json or "google" not in body_json.get("extra_body", {}):
+                        body_json.setdefault("extra_body", {}).setdefault("google", {}).setdefault("thinking_config", {
+                            "thinking_budget": 32768,
+                            "include_thoughts": True
+                        })
+                
+                body_to_send = json.dumps(body_json).encode("utf-8")
             except Exception:
                 # если парсинг не удался, просто отправляем оригинальный content
                 body_to_send = content
