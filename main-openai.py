@@ -807,12 +807,23 @@ async def health_check():
 # -------------------------
 # Catch-all proxy
 # -------------------------
-@APP.api_route("/{full_path:path}", methods=["GET","POST","PUT","DELETE","PATCH","OPTIONS"])
+@APP.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def catch_all(request: Request, full_path: str):
-    # Skip health check paths if they matched catch-all (though specific routes take precedence)
-    if full_path in ("", "health"):
-        return {"status": "ok"}
+    # Only allow specific paths to use proxy logic
+    # Everything else should be 404 locally without touching proxy
+    
+    # 1. Local routes (already handled by specific decorators above, but just in case)
+    if full_path in ["", "health", "status", "reload-keys", "favicon.ico"]:
+        return JSONResponse(status_code=404, content={"error": "Not Found"})
         
+    # 2. Allow only valid OpenAI/Gemini paths
+    valid_prefixes = ["v1/chat/completions", "v1/models", "chat/completions", "models"]
+    is_valid_path = any(full_path.startswith(p) for p in valid_prefixes)
+    
+    if not is_valid_path:
+        # Block unknown paths LOCALLY. Do not forward to upstream.
+        return JSONResponse(status_code=404, content={"error": "Path not found on this server."})
+
     upstream_url = map_incoming_to_upstream(full_path)
     content = await request.body()
     params = dict(request.query_params)
