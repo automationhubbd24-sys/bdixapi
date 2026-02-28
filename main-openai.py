@@ -295,7 +295,16 @@ async def validate_api_key(request: Request, call_next):
     # we will require the client to send a key that matches 'ADMIN_TOKEN' 
     # OR one of the keys in our pool.
     
-    if api_key != ADMIN_TOKEN and api_key not in KEYS_LIST:
+    is_valid_key = False
+    if api_key == ADMIN_TOKEN:
+        is_valid_key = True
+    elif 'POOL' in globals():
+        for s in POOL.states:
+            if s.key == api_key:
+                is_valid_key = True
+                break
+    
+    if not is_valid_key:
          return JSONResponse(status_code=403, content={"error": "Access Denied. Invalid API Key."})
 
     return await call_next(request)
@@ -605,7 +614,7 @@ class KeyPool:
         return out
 
 
-POOL = KeyPool(KEYS_LIST)
+POOL = KeyPool(KEYS_DATA)
 
 # -------------------------
 # Upstream streaming
@@ -899,10 +908,10 @@ async def status(x_proxy_admin: Optional[str] = Header(None)):
 async def reload_keys(x_proxy_admin: Optional[str] = Header(None)):
     if not is_admin(x_proxy_admin):
         raise HTTPException(401, "Unauthorized")
-    global KEYS_LIST, POOL
-    KEYS_LIST = load_keys_from_file(KEYS_FILE)
-    POOL = KeyPool(KEYS_LIST)
-    return JSONResponse({"reloaded": True, "num_keys": len(KEYS_LIST)})
+    global KEYS_DATA, POOL
+    KEYS_DATA = load_keys_from_file(KEYS_FILE)
+    POOL = KeyPool(KEYS_DATA)
+    return JSONResponse({"reloaded": True, "num_keys": len(KEYS_DATA)})
 
 # -------------------------
 # Run note:
