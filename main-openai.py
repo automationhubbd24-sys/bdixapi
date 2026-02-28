@@ -304,7 +304,7 @@ async def validate_api_key(request: Request, call_next):
 # -------------------------
 # Config
 # -------------------------
-VPN_PROXY_URL = os.getenv("VPN_PROXY_URL", "http://brd-customer-hl_e956420e-zone-isp:vgx1pc9geyjk@brd.superproxy.io:33335")  # proxy to bypass regional restrictions
+VPN_PROXY_URL = os.getenv("VPN_PROXY_URL", "http://brd-customer-hl_e956420e-zone-data_center:mwiju3dghh0n@brd.superproxy.io:33335")  # proxy to bypass regional restrictions
 KEYS_FILE = "api_keys.txt" # api keys, one per line (fallback)
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "changeme_local_only")
 UPSTREAM_BASE_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
