@@ -690,6 +690,15 @@ async def try_forward_to_upstream(method: str, url: str, headers: Dict[str, str]
 
         # Use proxy if configured, but verify=False to avoid SSL issues with some proxies
         transport = httpx.AsyncHTTPTransport(verify=False)
+        
+        # Debug Log: Confirm Proxy Usage
+        if proxy_url:
+            # Mask password for security in logs
+            safe_proxy = proxy_url.split("@")[-1] if "@" in proxy_url else "HIDDEN"
+            print(f"DEBUG: Forwarding request via Proxy: ...@{safe_proxy}")
+        else:
+            print("DEBUG: Direct connection (No Proxy)")
+
         async with httpx.AsyncClient(timeout=timeout, transport=transport, proxy=proxy_url) as client:
             try:
                 resp = await client.request(method, url, headers=headers, content=content)
