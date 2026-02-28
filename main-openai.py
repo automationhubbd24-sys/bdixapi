@@ -490,7 +490,7 @@ class KeyState:
     def is_available(self) -> bool:
         now = time.time()
         
-        # Check Backoff
+        # Check Backoff (Temporary ban due to errors)
         if now < self.banned_until:
             return False
             
@@ -499,15 +499,17 @@ class KeyState:
             self.usage_minute = 0
             self.minute_start_time = now
             
+        # STRICT RPM CHECK
         if self.usage_minute >= self.rpm_limit:
             return False
             
-        # Check/Reset Day Limit (Simple rolling 24h reset for in-memory)
+        # Check/Reset Day Limit
         # Ideally we sync this reset with DB
         if now - self.day_start_time >= 86400: # 24 hours
             self.usage_day = 0
             self.day_start_time = now
             
+        # STRICT RPD CHECK (20 per day)
         if self.usage_day >= self.rpd_limit:
             return False
             
@@ -528,25 +530,19 @@ class KeyState:
         if not SUPABASE_URL or not SUPABASE_KEY:
             return
         try:
-            # We need a new client for async context or careful usage
-            # For simplicity/safety in this script, we can run sync client in thread
-            # OR just skip for now to keep latency low.
-            # Ideally: Update usage_count_day = self.usage_day, last_used_at = now()
+            # STRICT UPDATE: Update DB on EVERY successful request
+            # No batching, no skipping. We need accurate counts.
             
-            # Optimization: Don't write to DB on EVERY request if high volume.
-            # Maybe every 5 or 10 requests?
-            if self.usage_day % 5 != 0: 
-                return
-
             def _update():
                 try:
                     client = create_client(SUPABASE_URL, SUPABASE_KEY)
+                    # Also update last_used_at to track activity
                     client.table("gemini_api_keys").update({
                         "usage_count_day": self.usage_day,
                         "last_used_at": time.strftime('%Y-%m-%d %H:%M:%S')
                     }).eq("key", self.key).execute()
                 except Exception as e:
-                    print(f"DB Update Error: {e}")
+                    print(f"DB Update Error for key {self.key[:8]}: {e}")
 
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, _update)
