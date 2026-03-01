@@ -917,8 +917,8 @@ async def proxy(request: Request, full_path: str):
         body_json = json.loads(body_bytes)
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
-            # You can change 'gemini-2.5-flash' to 'gemini-1.5-pro' if needed
-            body_json["model"] = "gemini-2.5-flash"
+            # Using gemini-2.0-flash as it's the stable latest version
+            body_json["model"] = "gemini-2.0-flash"
         content = json.dumps(body_json).encode('utf-8')
     except:
         content = body_bytes
@@ -943,7 +943,7 @@ async def proxy(request: Request, full_path: str):
                                 async for chunk in upstream.aiter_bytes():
                                     # For stream, we should also try to replace model name in the JSON chunks
                                      if b'"model":"' in chunk:
-                                         chunk = chunk.replace(b'"gemini-2.5-flash"', b'"salesmanchatbot-pro"')
+                                         chunk = chunk.replace(b'"gemini-2.0-flash"', b'"salesmanchatbot-pro"')
                                      yield chunk
                 return StreamingResponse(stream_gen(), media_type="text/event-stream")
             else:

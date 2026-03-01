@@ -10,7 +10,7 @@ def test_chat():
     data = {
         "model": "salesmanchatbot-pro",
         "messages": [
-            {"role": "user", "content": "Hello, what is your model name?"}
+            {"role": "user", "content": "hi"}
         ],
         "stream": False
     }
