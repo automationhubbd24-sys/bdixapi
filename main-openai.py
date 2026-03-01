@@ -256,8 +256,11 @@ APP = FastAPI(title="Local OpenAI-compatible -> Gemini proxy (with optional thin
 # -------------------------
 @APP.middleware("http")
 async def validate_api_key(request: Request, call_next):
-    # Allow health checks and root without auth
-    if request.url.path in ["/", "/health", "/status", "/reload-keys", "/favicon.ico"]:
+    # Allow health checks, root (login), admin routes, and favicon without auth
+    # Also allow /v1 root to show status message (but subpaths need auth)
+    allowed_paths = ["/", "/health", "/status", "/reload-keys", "/favicon.ico", "/admin", "/admin/login", "/admin/logout", "/v1"]
+    
+    if request.url.path in allowed_paths:
         return await call_next(request)
     
     # Check for Authorization header
@@ -844,45 +847,18 @@ LOGIN_TEMPLATE = """
 # Health Check & Frontend
 # -------------------------
 @APP.get("/", response_class=HTMLResponse)
-async def landing_page():
-    # Professional Public Landing Page
-    return HTMLResponse(content="""
-    <html>
-    <head>
-        <title>SalesmenChatbot AI - Enterprise LLM</title>
-        <style>
-            body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; height: 100vh; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; }
-            .container { text-align: center; padding: 2rem; background: #1e293b; border-radius: 1rem; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); max-width: 500px; width: 90%; }
-            h1 { margin: 0 0 0.5rem 0; background: linear-gradient(to right, #60a5fa, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2.5rem; }
-            p { color: #94a3b8; margin-bottom: 2rem; line-height: 1.6; }
-            .status-badge { display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(34, 197, 94, 0.1); color: #22c55e; padding: 0.5rem 1rem; border-radius: 9999px; font-weight: 600; font-size: 0.875rem; }
-            .dot { width: 8px; height: 8px; background: #22c55e; border-radius: 50%; box-shadow: 0 0 8px #22c55e; animation: pulse 2s infinite; }
-            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-            .footer { margin-top: 2rem; font-size: 0.75rem; color: #64748b; }
-            .admin-link { margin-top: 1rem; display: block; color: #3b82f6; text-decoration: none; font-size: 0.8rem; opacity: 0.5; }
-            .admin-link:hover { opacity: 1; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>SalesmenChatbot AI</h1>
-            <p>Advanced Enterprise Language Model API<br>Optimized for Sales Automation & Customer Engagement</p>
-            
-            <div class="status-badge">
-                <span class="dot"></span>
-                Systems Operational
-            </div>
+async def root_redirect():
+    # Redirect root directly to admin login
+    return RedirectResponse(url="/admin/login")
 
-            <div class="footer">
-                &copy; 2026 SalesmenChatbot AI Inc. All rights reserved.<br>
-                <span style="opacity:0.7">Powered by Proprietary Neural Engine v2.5</span>
-            </div>
-            
-            <a href="/admin" class="admin-link">Admin Access</a>
-        </div>
-    </body>
-    </html>
-    """, status_code=200)
+@APP.get("/v1")
+async def v1_root():
+    # Show status message for /v1, but keep actual API endpoints secure
+    return {
+        "service": "SalesmenChatbot AI LLM",
+        "status": "operational",
+        "message": "SalesmenChatbot LLM is working. Please use /v1/chat/completions for API access."
+    }
 
 @APP.get("/admin", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
