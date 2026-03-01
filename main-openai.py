@@ -2,18 +2,20 @@
 # FastAPI local OpenAI-compatible -> Gemini proxy with rotating keys + optional thinking chain
 # pip install fastapi uvicorn httpx supabase python-dotenv
 
+from fastapi import FastAPI, Request, Response, HTTPException, Header, Query, Form, Depends
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 import os
 import time
 import asyncio
 import json
-import random
-from typing import List, Optional, Dict, Any, Tuple
-
-from fastapi import FastAPI, Request, HTTPException, Header, Depends
-from fastapi.responses import Response, JSONResponse, StreamingResponse, HTMLResponse
 import httpx
-from dotenv import load_dotenv
+import random
+import string
 from supabase import create_client, Client
+from dotenv import load_dotenv
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
@@ -361,6 +363,8 @@ def get_rotating_proxy_url():
 
 KEYS_FILE = "api_keys.txt" # api keys, one per line (fallback)
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "changeme_local_only")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 UPSTREAM_BASE_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 BACKOFF_MIN = 5
 BACKOFF_MAX = 600
@@ -764,64 +768,148 @@ def detect_stream_from_request(content_bytes: Optional[bytes], query_params: Dic
     return False
 
 # -------------------------
+# Auth Utilities
+# -------------------------
+def is_authenticated(request: Request) -> bool:
+    """Check if user is logged in via cookie or token."""
+    session_token = request.cookies.get("admin_session")
+    if session_token == ADMIN_TOKEN:
+        return True
+    
+    # Fallback to header or query param for API access
+    auth_header = request.headers.get("x-proxy-admin")
+    query_token = request.query_params.get("token")
+    return is_admin(auth_header) or is_admin(query_token)
+
+# -------------------------
+# Templates
+# -------------------------
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - SalesmenChatbot AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    </style>
+</head>
+<body class="h-screen flex items-center justify-center p-4">
+    <div class="max-w-md w-full glass p-8 rounded-2xl shadow-2xl">
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-xl mb-4 shadow-lg shadow-blue-500/20">
+                <i class="fas fa-robot text-2xl text-white"></i>
+            </div>
+            <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">SalesmenChatbot Admin</h1>
+            <p class="text-slate-400 mt-2">Enter credentials to access dashboard</p>
+        </div>
+
+        <form action="/admin/login" method="POST" class="space-y-6">
+            <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Username</label>
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-500">
+                        <i class="fas fa-user"></i>
+                    </span>
+                    <input type="text" name="username" required class="w-full pl-10 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white" placeholder="admin">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Password</label>
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-500">
+                        <i class="fas fa-lock"></i>
+                    </span>
+                    <input type="password" name="password" required class="w-full pl-10 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-white" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022">
+                </div>
+            </div>
+            
+            <button type="submit" class="w-full py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-semibold rounded-xl shadow-lg shadow-blue-500/20 transform hover:-translate-y-0.5 active:translate-y-0 transition-all">
+                Sign In
+            </button>
+        </form>
+        
+        <div class="mt-8 text-center text-xs text-slate-500">
+            &copy; 2026 SalesmenChatbot AI Inc.
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# -------------------------
 # Health Check & Frontend
 # -------------------------
 @APP.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    # Only allow admin to see dashboard (optional, or remove completely)
-    # For now, let's just return a generic welcome message or 404
-    # But user wants the frontend... let's check auth or just hide sensitive info
-    
-    # Wait, the user said "ami chai user ra amon kono data dekte na pak"
-    # referring to {"status":"ok","service":"gemini-proxy","keys_loaded":10}
-    # This JSON was coming from the previous root handler.
-    # The NEW root handler returns the HTML Dashboard.
-    # But maybe the user doesn't want PUBLIC access to the dashboard either?
-    
-    # Let's protect the dashboard with the ADMIN_TOKEN too.
-    # If no token, show a simple "Service Running" page without stats.
-    
-    auth_header = request.headers.get("x-proxy-admin")
-    # Also check query param ?token=... for easy browser access
-    token = request.query_params.get("token")
-    
-    if not is_admin(auth_header) and not is_admin(token):
-        # Public view: Just a simple status without numbers
-        return HTMLResponse(content="""
-        <html>
-        <head>
-            <title>SalesmenChatbot AI - Enterprise LLM</title>
-            <style>
-                body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; height: 100vh; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; }
-                .container { text-align: center; padding: 2rem; background: #1e293b; border-radius: 1rem; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); max-width: 500px; width: 90%; }
-                h1 { margin: 0 0 0.5rem 0; background: linear-gradient(to right, #60a5fa, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2.5rem; }
-                p { color: #94a3b8; margin-bottom: 2rem; line-height: 1.6; }
-                .status-badge { display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(34, 197, 94, 0.1); color: #22c55e; padding: 0.5rem 1rem; border-radius: 9999px; font-weight: 600; font-size: 0.875rem; }
-                .dot { width: 8px; height: 8px; background: #22c55e; border-radius: 50%; box-shadow: 0 0 8px #22c55e; animation: pulse 2s infinite; }
-                @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-                .footer { margin-top: 2rem; font-size: 0.75rem; color: #64748b; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>SalesmenChatbot AI</h1>
-                <p>Advanced Enterprise Language Model API<br>Optimized for Sales Automation & Customer Engagement</p>
-                
-                <div class="status-badge">
-                    <span class="dot"></span>
-                    Systems Operational
-                </div>
-
-                <div class="footer">
-                    &copy; 2026 SalesmenChatbot AI Inc. All rights reserved.<br>
-                    <span style="opacity:0.7">Powered by Proprietary Neural Engine v2.5</span>
-                </div>
+async def landing_page():
+    # Professional Public Landing Page
+    return HTMLResponse(content="""
+    <html>
+    <head>
+        <title>SalesmenChatbot AI - Enterprise LLM</title>
+        <style>
+            body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; height: 100vh; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+            .container { text-align: center; padding: 2rem; background: #1e293b; border-radius: 1rem; border: 1px solid #334155; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); max-width: 500px; width: 90%; }
+            h1 { margin: 0 0 0.5rem 0; background: linear-gradient(to right, #60a5fa, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2.5rem; }
+            p { color: #94a3b8; margin-bottom: 2rem; line-height: 1.6; }
+            .status-badge { display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(34, 197, 94, 0.1); color: #22c55e; padding: 0.5rem 1rem; border-radius: 9999px; font-weight: 600; font-size: 0.875rem; }
+            .dot { width: 8px; height: 8px; background: #22c55e; border-radius: 50%; box-shadow: 0 0 8px #22c55e; animation: pulse 2s infinite; }
+            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+            .footer { margin-top: 2rem; font-size: 0.75rem; color: #64748b; }
+            .admin-link { margin-top: 1rem; display: block; color: #3b82f6; text-decoration: none; font-size: 0.8rem; opacity: 0.5; }
+            .admin-link:hover { opacity: 1; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>SalesmenChatbot AI</h1>
+            <p>Advanced Enterprise Language Model API<br>Optimized for Sales Automation & Customer Engagement</p>
+            
+            <div class="status-badge">
+                <span class="dot"></span>
+                Systems Operational
             </div>
-        </body>
-        </html>
-        """, status_code=200)
 
+            <div class="footer">
+                &copy; 2026 SalesmenChatbot AI Inc. All rights reserved.<br>
+                <span style="opacity:0.7">Powered by Proprietary Neural Engine v2.5</span>
+            </div>
+            
+            <a href="/admin" class="admin-link">Admin Access</a>
+        </div>
+    </body>
+    </html>
+    """, status_code=200)
+
+@APP.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(request: Request):
+    if not is_authenticated(request):
+        return RedirectResponse(url="/admin/login")
     return HTMLResponse(content=HTML_TEMPLATE, status_code=200)
+
+@APP.get("/admin/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if is_authenticated(request):
+        return RedirectResponse(url="/admin")
+    return HTMLResponse(content=LOGIN_TEMPLATE, status_code=200)
+
+@APP.post("/admin/login")
+async def login_handler(username: str = Form(...), password: str = Form(...)):
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        response = RedirectResponse(url="/admin", status_code=303)
+        # Set cookie valid for 30 days
+        response.set_cookie(key="admin_session", value=ADMIN_TOKEN, max_age=2592000, httponly=True)
+        return response
+    return HTMLResponse(content=LOGIN_TEMPLATE.replace("Enter credentials", "<span style='color:#ef4444'>Invalid username or password</span>"), status_code=401)
+
+@APP.get("/admin/logout")
+async def logout_handler():
+    response = RedirectResponse(url="/admin/login")
+    response.delete_cookie("admin_session")
+    return response
 
 @APP.get("/health")
 async def health_check():
@@ -956,17 +1044,23 @@ def is_admin(auth_header: Optional[str]) -> bool:
     return False
 
 @APP.get("/status")
-async def status(x_proxy_admin: Optional[str] = Header(None)):
-    if not is_admin(x_proxy_admin):
-        raise HTTPException(401, "Unauthorized")
-    return JSONResponse({"keys": POOL.status()})
+async def get_status(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return POOL.status()
 
 @APP.post("/reload-keys")
-async def reload_keys(x_proxy_admin: Optional[str] = Header(None)):
-    if not is_admin(x_proxy_admin):
+async def reload_keys(request: Request):
+    if not is_authenticated(request):
         raise HTTPException(401, "Unauthorized")
     global KEYS_DATA, POOL
-    KEYS_DATA = load_keys_from_file(KEYS_FILE)
+    KEYS_DATA = load_keys_from_supabase()
+    if not KEYS_DATA:
+        KEYS_DATA = load_keys_from_file(KEYS_FILE)
+    
+    if not KEYS_DATA:
+        return JSONResponse({"error": "No keys found"}, status_code=500)
+        
     POOL = KeyPool(KEYS_DATA)
     return JSONResponse({"reloaded": True, "num_keys": len(KEYS_DATA)})
 
