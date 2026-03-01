@@ -55,7 +55,7 @@ class ConfigUpdate(BaseModel):
 class KeyCreate(BaseModel):
     api: str
     provider: str = "google"
-    model: str = "default"
+    model: str = "gemini-2.5-flash-lite"
     status: str = "active"
 
 class KeyUpdate(BaseModel):
@@ -253,14 +253,52 @@ HTML_TEMPLATE = """
                     <h2 class="text-xl font-bold text-white flex items-center gap-2">
                         <i data-lucide="database" class="h-5 w-5 text-slate-400"></i> Key Management
                     </h2>
-                    <div class="flex gap-4">
+                    <div class="flex gap-4 items-center">
                          <input type="text" id="search-input" onkeyup="renderManagementTable()" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                          <select id="provider-filter" onchange="renderManagementTable()" class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                             <option value="all">All Providers</option>
                          </select>
-                         <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
-                            <i data-lucide="plus" class="h-4 w-4"></i> Add Key
-                        </button>
+                         <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-1">
+                            <input type="text" id="direct-add-key-input" placeholder="Paste Key here" class="bg-transparent text-white px-2 py-1 text-sm focus:outline-none w-48">
+                            <select id="direct-add-provider" class="bg-slate-900 text-slate-300 px-2 py-1 text-xs rounded border-none outline-none mr-1">
+                                <option value="google" selected>google</option>
+                                <option value="gemini">gemini</option>
+                            </select>
+                            <button onclick="directAddKey()" class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded-md text-white text-xs font-bold transition">
+                                + Add Key
+                            </button>
+                         </div>
+                    </div>
+                </div>
+                <div id="add-key-modal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
+                    <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-bold text-white">Add API Key</h3>
+                            <button onclick="closeAddKeyModal()" class="text-slate-400 hover:text-white">✕</button>
+                        </div>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs text-slate-400 mb-1">API Key</label>
+                                <input type="text" id="add-key-input" class="w-full bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Enter API Key">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs text-slate-400 mb-1">Provider</label>
+                                    <select id="add-key-provider" class="w-full bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                                        <option value="google" selected>google</option>
+                                        <option value="gemini">gemini</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-slate-400 mb-1">Model</label>
+                                    <input type="text" id="add-key-model" class="w-full bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" value="gemini-2.5-flash-lite">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-2 mt-6">
+                            <button onclick="closeAddKeyModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-white text-sm">Cancel</button>
+                            <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white text-sm">Add Key</button>
+                        </div>
                     </div>
                 </div>
                 <div class="overflow-x-auto">
@@ -524,10 +562,53 @@ HTML_TEMPLATE = """
             } catch(e) { showToast("Failed: " + e.message, "error"); }
         }
 
+        function openAddKeyModal() {
+            const modal = document.getElementById('add-key-modal');
+            if(modal) modal.classList.remove('hidden');
+            const input = document.getElementById('add-key-input');
+            if(input) input.value = '';
+            const provider = document.getElementById('add-key-provider');
+            if(provider) provider.value = 'google';
+            const model = document.getElementById('add-key-model');
+            if(model && !model.value) model.value = 'gemini-2.5-flash-lite';
+        }
+
+        function closeAddKeyModal() {
+            const modal = document.getElementById('add-key-modal');
+            if(modal) modal.classList.add('hidden');
+        }
+
+        async function directAddKey() {
+            const apiInput = document.getElementById('direct-add-key-input');
+            const api = apiInput ? apiInput.value.trim() : "";
+            if(!api) { showToast("Please paste an API Key first", "error"); return; }
+            const providerSelect = document.getElementById('direct-add-provider');
+            const provider = providerSelect ? providerSelect.value : "google";
+            
+            try {
+                const res = await fetch('/admin/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api, provider, status: 'active', model: 'gemini-2.5-flash-lite' })
+                });
+                if(res.ok) {
+                    showToast("Key added successfully!", "success");
+                    apiInput.value = "";
+                    fetchDBKeys();
+                } else {
+                    showToast("Failed to add key", "error");
+                }
+            } catch(e) { showToast("Error adding key", "error"); }
+        }
+
         async function addKey() {
-            const api = prompt("Enter API Key:");
-            if(!api) return;
-            const provider = prompt("Provider (google/gemini):", "google");
+            const apiInput = document.getElementById('add-key-input');
+            const api = apiInput ? apiInput.value.trim() : "";
+            if(!api) { showToast("API Key required", "error"); return; }
+            const providerSelect = document.getElementById('add-key-provider');
+            const provider = providerSelect ? providerSelect.value : "google";
+            const modelInput = document.getElementById('add-key-model');
+            const model = modelInput ? modelInput.value.trim() || "gemini-2.5-flash-lite" : "gemini-2.5-flash-lite";
             
             try {
                 const res = await fetch('/admin/keys', {
@@ -535,13 +616,14 @@ HTML_TEMPLATE = """
                     headers: { 
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ api, provider, status: 'active', model: 'default' })
+                    body: JSON.stringify({ api, provider, status: 'active', model })
                 });
                 if(res.status === 401) { window.location.href = '/admin/login'; return; }
                 const data = await res.json();
                 if(res.ok) {
                     showToast(data.message || "Key added successfully", "success");
                     fetchDBKeys();
+                    closeAddKeyModal();
                 } else {
                     showToast(data.error || "Failed to add key", "error");
                 }
@@ -919,7 +1001,7 @@ async def proxy(request: Request, full_path: str):
         body_json = json.loads(body_bytes)
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
-            # You can change 'gemini-2.5-flash-lite' to 'gemini-1.5-pro' if needed
+            # Strictly use gemini-2.5-flash-lite as requested (2026 new model)
             body_json["model"] = "gemini-2.5-flash-lite"
         content = json.dumps(body_json).encode('utf-8')
     except:
