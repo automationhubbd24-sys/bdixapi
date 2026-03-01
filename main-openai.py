@@ -165,23 +165,31 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <div class="card overflow-hidden mb-8">
-            <h2 class="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                <i data-lucide="list" class="h-5 w-5 text-slate-400"></i> Node Performance
+        <div class="card overflow-hidden mb-8 p-4"> <!-- Reduced padding -->
+            <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2"> <!-- Smaller header -->
+                <i data-lucide="list" class="h-4 w-4 text-slate-400"></i> Node Performance
             </h2>
             <div class="overflow-x-auto">
                 <table class="w-full text-left border-collapse">
                     <thead>
-                        <tr class="text-slate-400 text-sm border-b border-slate-700">
-                            <th class="pb-3 pl-2">Node ID</th>
-                            <th class="pb-3">Status</th>
-                            <th class="pb-3">Success</th>
-                            <th class="pb-3">Failures</th>
-                            <th class="pb-3">Latency (avg)</th>
+                        <tr class="text-slate-400 text-xs border-b border-slate-700"> <!-- Smaller text -->
+                            <th class="pb-2 pl-2">Node ID</th>
+                            <th class="pb-2">Status</th>
+                            <th class="pb-2">Success</th>
+                            <th class="pb-2">Failures</th>
+                            <th class="pb-2">Latency (avg)</th>
                         </tr>
                     </thead>
-                    <tbody id="keys-table-body" class="text-slate-300"></tbody>
+                    <tbody id="keys-table-body" class="text-slate-300 text-sm"></tbody> <!-- Smaller text -->
                 </table>
+            </div>
+            <!-- Node Performance Pagination -->
+            <div class="flex justify-between items-center mt-4 text-xs text-slate-500">
+                <div id="nodes-pagination-info">Showing 0 to 0 of 0 nodes</div>
+                <div class="flex gap-2">
+                    <button onclick="changeNodesPage(-1)" id="prev-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Prev</button>
+                    <button onclick="changeNodesPage(1)" id="next-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Next</button>
+                </div>
             </div>
         </div>
 
@@ -230,7 +238,9 @@ HTML_TEMPLATE = """
     <script>
         lucide.createIcons();
         let allKeys = [];
+        let allNodes = []; // Global store for performance nodes
         let currentPage = 1;
+        let currentNodesPage = 1; // For Node Performance table
         const keysPerPage = 10;
         const revealedKeys = {};
 
@@ -240,7 +250,8 @@ HTML_TEMPLATE = """
                 if(!res.ok) { if(res.status === 401) window.location.href = '/admin/login'; return; }
                 const data = await res.json();
                 if(Array.isArray(data)) {
-                    renderKeys(data);
+                    allNodes = data;
+                    renderKeys();
                     document.getElementById('key-count').innerText = data.length;
                 }
                 fetchDBKeys();
@@ -376,16 +387,39 @@ HTML_TEMPLATE = """
         }
 
         function changePage(delta) { currentPage += delta; renderManagementTable(); }
-        function renderKeys(keys) {
+        function changeNodesPage(delta) {
+            currentNodesPage += delta;
+            renderKeys();
+        }
+
+        function renderKeys() {
             const tbody = document.getElementById('keys-table-body');
+            const info = document.getElementById('nodes-pagination-info');
+            const prev = document.getElementById('prev-nodes-page');
+            const next = document.getElementById('next-nodes-page');
+            
             if(!tbody) return;
-            tbody.innerHTML = keys.map(k => `
+            
+            const total = allNodes.length;
+            const totalPages = Math.ceil(total / keysPerPage) || 1;
+            if(currentNodesPage > totalPages) currentNodesPage = totalPages;
+            if(currentNodesPage < 1) currentNodesPage = 1;
+
+            const start = (currentNodesPage - 1) * keysPerPage;
+            const end = Math.min(start + keysPerPage, total);
+            const pageItems = allNodes.slice(start, end);
+
+            if(info) info.innerText = `Showing ${total === 0 ? 0 : start + 1} to ${end} of ${total} nodes`;
+            if(prev) prev.disabled = currentNodesPage === 1;
+            if(next) next.disabled = currentNodesPage === totalPages;
+
+            tbody.innerHTML = pageItems.map(k => `
                 <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition">
-                    <td class="py-4 pl-2 font-mono text-sm text-slate-400">${k.key_preview}</td>
-                    <td class="py-4 ${k.available_in > 0 ? "text-red-400" : "text-green-400"} font-medium">${k.available_in > 0 ? `Limited (${k.available_in}s)` : "Ready"}</td>
-                    <td class="py-4 text-green-400">${k.success}</td>
-                    <td class="py-4 text-red-400">${k.fail}</td>
-                    <td class="py-4 text-slate-500">-</td>
+                    <td class="py-3 pl-2 font-mono text-xs text-slate-400">${k.key_preview}</td>
+                    <td class="py-3 text-xs ${k.available_in > 0 ? "text-red-400" : "text-green-400"} font-medium">${k.available_in > 0 ? `Limited (${k.available_in}s)` : "Ready"}</td>
+                    <td class="py-3 text-xs text-green-400">${k.success}</td>
+                    <td class="py-3 text-xs text-red-400">${k.fail}</td>
+                    <td class="py-3 text-xs text-slate-500">-</td>
                 </tr>`).join('');
         }
         
