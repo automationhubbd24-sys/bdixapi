@@ -500,11 +500,13 @@ class KeyState:
             self.minute_start_time = now
         return now >= self.banned_until and self.usage_minute < self.rpm_limit and self.usage_day < self.rpd_limit
 
+    def mark_picked(self):
+        self.usage_minute += 1
+        self.usage_day += 1
+
     def mark_success(self):
         self.banned_until = 0.0
         self.success += 1
-        self.usage_minute += 1
-        self.usage_day += 1
         asyncio.create_task(self.update_db())
 
     async def update_db(self):
@@ -531,7 +533,9 @@ class KeyPool:
             for _ in range(len(self.states)):
                 st = self.states[self.idx]
                 self.idx = (self.idx + 1) % len(self.states)
-                if st.is_available(): return st
+                if st.is_available(): 
+                    st.mark_picked() # Mark as used immediately to avoid parallel overflow
+                    return st
             return None
 
     def status(self):
