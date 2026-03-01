@@ -165,71 +165,80 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <div class="card overflow-hidden mb-8 p-4"> <!-- Reduced padding -->
-            <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2"> <!-- Smaller header -->
-                <i data-lucide="list" class="h-4 w-4 text-slate-400"></i> Node Performance
-            </h2>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="text-slate-400 text-xs border-b border-slate-700"> <!-- Smaller text -->
-                            <th class="pb-2 pl-2">Node ID</th>
-                            <th class="pb-2">Status</th>
-                            <th class="pb-2">Success</th>
-                            <th class="pb-2">Failures</th>
-                            <th class="pb-2">Latency (avg)</th>
-                        </tr>
-                    </thead>
-                    <tbody id="keys-table-body" class="text-slate-300 text-sm"></tbody> <!-- Smaller text -->
-                </table>
-            </div>
-            <!-- Node Performance Pagination -->
-            <div class="flex justify-between items-center mt-4 text-xs text-slate-500">
-                <div id="nodes-pagination-info">Showing 0 to 0 of 0 nodes</div>
-                <div class="flex gap-2">
-                    <button onclick="changeNodesPage(-1)" id="prev-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Prev</button>
-                    <button onclick="changeNodesPage(1)" id="next-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Next</button>
+        <div class="flex gap-2 mb-6 border-b border-slate-800 pb-1">
+            <button id="tab-nodes" onclick="showTab('nodes')" class="px-6 py-2 text-sm font-bold transition-all border-b-2 border-blue-500 text-blue-500">Node Performance</button>
+            <button id="tab-keys" onclick="showTab('keys')" class="px-6 py-2 text-sm font-bold transition-all border-b-2 border-transparent text-slate-400 hover:text-white">Key Management</button>
+        </div>
+
+        <div id="content-nodes" class="tab-content">
+            <div class="card overflow-hidden mb-8 p-4"> <!-- Reduced padding -->
+                <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2"> <!-- Smaller header -->
+                    <i data-lucide="list" class="h-4 w-4 text-slate-400"></i> Node Performance
+                </h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="text-slate-400 text-xs border-b border-slate-700"> <!-- Smaller text -->
+                                <th class="pb-2 pl-2">Node ID</th>
+                                <th class="pb-2">Status</th>
+                                <th class="pb-2">Success</th>
+                                <th class="pb-2">Failures</th>
+                                <th class="pb-2">Latency (avg)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="keys-table-body" class="text-slate-300 text-sm"></tbody> <!-- Smaller text -->
+                    </table>
+                </div>
+                <!-- Node Performance Pagination -->
+                <div class="flex justify-between items-center mt-4 text-xs text-slate-500">
+                    <div id="nodes-pagination-info">Showing 0 to 0 of 0 nodes</div>
+                    <div class="flex gap-2">
+                        <button onclick="changeNodesPage(-1)" id="prev-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Prev</button>
+                        <button onclick="changeNodesPage(1)" id="next-nodes-page" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded transition disabled:opacity-50">Next</button>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <div class="card overflow-hidden">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-xl font-bold text-white flex items-center gap-2">
-                    <i data-lucide="database" class="h-5 w-5 text-slate-400"></i> Key Management
-                </h2>
-                <div class="flex gap-4">
-                     <input type="text" id="search-input" onkeyup="renderManagementTable()" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
-                     <select id="provider-filter" onchange="renderManagementTable()" class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
-                        <option value="all">All Providers</option>
-                     </select>
-                     <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
-                        <i data-lucide="plus" class="h-4 w-4"></i> Add Key
-                    </button>
+        <div id="content-keys" class="tab-content hidden">
+            <div class="card overflow-hidden">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-bold text-white flex items-center gap-2">
+                        <i data-lucide="database" class="h-5 w-5 text-slate-400"></i> Key Management
+                    </h2>
+                    <div class="flex gap-4">
+                         <input type="text" id="search-input" onkeyup="renderManagementTable()" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                         <select id="provider-filter" onchange="renderManagementTable()" class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                            <option value="all">All Providers</option>
+                         </select>
+                         <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
+                            <i data-lucide="plus" class="h-4 w-4"></i> Add Key
+                        </button>
+                    </div>
                 </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead>
-                        <tr class="text-slate-400 text-sm border-b border-slate-700">
-                            <th class="pb-3 pl-2">ID</th>
-                            <th class="pb-3">Provider</th>
-                            <th class="pb-3">Model</th>
-                            <th class="pb-3">API Key</th>
-                            <th class="pb-3">Status</th>
-                            <th class="pb-3">Usage</th>
-                            <th class="pb-3">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="manage-keys-body" class="text-slate-300"></tbody>
-                </table>
-            </div>
-            <div class="flex justify-between items-center mt-6 text-sm text-slate-400">
-                <div id="pagination-info">Showing 0 to 0 of 0 keys</div>
-                <div class="flex gap-2">
-                    <button onclick="changePage(-1)" id="prev-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50">Previous</button>
-                    <div id="page-numbers" class="flex gap-1"></div>
-                    <button onclick="changePage(1)" id="next-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50">Next</button>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="text-slate-400 text-sm border-b border-slate-700">
+                                <th class="pb-3 pl-2">ID</th>
+                                <th class="pb-3">Provider</th>
+                                <th class="pb-3">Model</th>
+                                <th class="pb-3">API Key</th>
+                                <th class="pb-3">Status</th>
+                                <th class="pb-3">Usage</th>
+                                <th class="pb-3">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="manage-keys-body" class="text-slate-300"></tbody>
+                    </table>
+                </div>
+                <div class="flex justify-between items-center mt-6 text-sm text-slate-400">
+                    <div id="pagination-info">Showing 0 to 0 of 0 keys</div>
+                    <div class="flex gap-2">
+                        <button onclick="changePage(-1)" id="prev-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50">Previous</button>
+                        <div id="page-numbers" class="flex gap-1"></div>
+                        <button onclick="changePage(1)" id="next-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50">Next</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -243,6 +252,22 @@ HTML_TEMPLATE = """
         let currentNodesPage = 1; // For Node Performance table
         const keysPerPage = 10;
         const revealedKeys = {};
+
+        function showTab(tab) {
+            document.getElementById('content-nodes').classList.toggle('hidden', tab !== 'nodes');
+            document.getElementById('content-keys').classList.toggle('hidden', tab !== 'keys');
+            
+            const btnNodes = document.getElementById('tab-nodes');
+            const btnKeys = document.getElementById('tab-keys');
+            
+            if(tab === 'nodes') {
+                btnNodes.className = "px-6 py-2 text-sm font-bold transition-all border-b-2 border-blue-500 text-blue-500";
+                btnKeys.className = "px-6 py-2 text-sm font-bold transition-all border-b-2 border-transparent text-slate-400 hover:text-white";
+            } else {
+                btnNodes.className = "px-6 py-2 text-sm font-bold transition-all border-b-2 border-transparent text-slate-400 hover:text-white";
+                btnKeys.className = "px-6 py-2 text-sm font-bold transition-all border-b-2 border-blue-500 text-blue-500";
+            }
+        }
 
         async function fetchStats() {
             try {
