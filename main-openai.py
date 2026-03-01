@@ -1045,6 +1045,38 @@ def normalize_unified_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         payload["messages"] = [{"role": "user", "content": text or ""}]
     return payload
 
+def normalize_messages(messages: Any) -> List[Dict[str, Any]]:
+    if not isinstance(messages, list):
+        return []
+    if all(isinstance(m, str) for m in messages):
+        normalized: List[Dict[str, Any]] = []
+        for m in messages:
+            role = "user"
+            content = m
+            low = m.lower()
+            if low.startswith("human:"):
+                role = "user"
+                content = m.split(":", 1)[1].strip()
+            elif low.startswith("system:"):
+                role = "system"
+                content = m.split(":", 1)[1].strip()
+            elif low.startswith("ai:") or low.startswith("assistant:"):
+                role = "assistant"
+                content = m.split(":", 1)[1].strip()
+            normalized.append({"role": role, "content": content})
+        return normalized
+    normalized: List[Dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, dict):
+            role = m.get("role") or "user"
+            content = m.get("content")
+            if content is None and "text" in m:
+                content = m.get("text")
+            if content is None:
+                content = ""
+            normalized.append({"role": role, "content": content})
+    return normalized
+
 @APP.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(request: Request, full_path: str):
     is_unified = full_path in ["v1/unified", "v1/unified/"] and request.method == "POST"
@@ -1072,6 +1104,8 @@ async def proxy(request: Request, full_path: str):
         body_json = json.loads(body_bytes)
         if full_path == "v1/chat/completions" and (is_unified or body_json.get("unified")):
             body_json = normalize_unified_payload(body_json)
+        if "messages" in body_json:
+            body_json["messages"] = normalize_messages(body_json.get("messages"))
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
             # Strictly use gemini-2.5-flash-lite as requested (2026 new model)
