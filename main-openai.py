@@ -569,57 +569,61 @@ class KeyState:
         self.banned_until: float = 0.0
         self.success: int = 0
         self.fail: int = 0
-        self.usage_minute = 0
-        self.usage_hour = 0
-        self.usage_day = key_data.get("usage_day", 0)
-        self.minute_start_time = time.time()
-        self.hour_start_time = time.time()
-        self.last_check_date = datetime.now(timezone.utc).date()
+        # Sliding Window timestamps
+        self.requests_minute: List[float] = []
+        self.requests_hour: List[float] = []
+        self.requests_day: List[float] = []
+        self.usage_day_db = key_data.get("usage_day", 0) # Base usage from DB
 
     def is_available(self) -> bool:
         now = time.time()
-        today = datetime.now(timezone.utc).date()
         
-        # New Day Reset
-        if today > self.last_check_date:
-            self.usage_day = 0
-            self.last_check_date = today
-            
-        # Minute Reset
-        if now - self.minute_start_time >= 60:
-            self.usage_minute = 0
-            self.minute_start_time = now
-            
-        # Hour Reset
-        if now - self.hour_start_time >= 3600:
-            self.usage_hour = 0
-            self.hour_start_time = now
-            
-        # Check against GLOBAL_CONFIG
+        # 1. Check Banned/Backoff
+        if now < self.banned_until:
+            return False
+
+        # 2. Cleanup old timestamps & Check Limits
         rpm_limit = GLOBAL_CONFIG.get("rpm", DEFAULT_RPM)
         rph_limit = GLOBAL_CONFIG.get("rph", DEFAULT_RPH)
         rpd_limit = GLOBAL_CONFIG.get("rpd", DEFAULT_RPD)
+
+        # Minute cleanup
+        self.requests_minute = [t for t in self.requests_minute if now - t < 60]
+        if len(self.requests_minute) >= rpm_limit:
+            return False
+
+        # Hour cleanup
+        self.requests_hour = [t for t in self.requests_hour if now - t < 3600]
+        if len(self.requests_hour) >= rph_limit:
+            return False
+
+        # Day cleanup (24 hours)
+        self.requests_day = [t for t in self.requests_day if now - t < 86400]
+        # Total day usage = sliding window count + DB starting usage (if window is fresh)
+        if (len(self.requests_day) + self.usage_day_db) >= rpd_limit:
+            return False
         
-        return (now >= self.banned_until and 
-                self.usage_minute < rpm_limit and 
-                self.usage_hour < rph_limit and 
-                self.usage_day < rpd_limit)
+        return True
 
     def mark_picked(self):
-        self.usage_minute += 1
-        self.usage_hour += 1
-        self.usage_day += 1
+        now = time.time()
+        self.requests_minute.append(now)
+        self.requests_hour.append(now)
+        self.requests_day.append(now)
 
     def mark_success(self):
         self.banned_until = 0.0
         self.success += 1
+        # Update DB usage_today
         asyncio.create_task(self.update_db())
 
     async def update_db(self):
         if POSTGRES_URL:
             try:
                 conn = await asyncpg.connect(POSTGRES_URL)
-                await conn.execute("UPDATE api_list SET usage_today = $1, last_used_at = NOW() WHERE api = $2", self.usage_day, self.key)
+                # usage_today in DB should reflect the total picked in last 24h cycle
+                total_today = len(self.requests_day) + self.usage_day_db
+                await conn.execute("UPDATE api_list SET usage_today = $1, last_used_at = NOW() WHERE api = $2", total_today, self.key)
                 await conn.close()
             except: pass
 
