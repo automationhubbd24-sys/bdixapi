@@ -994,11 +994,65 @@ async def reload():
     await startup()
     return {"reloaded": True}
 
+def normalize_unified_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if payload.get("messages"):
+        return payload
+    parts: List[Dict[str, Any]] = []
+    text = payload.get("text") or payload.get("input") or payload.get("prompt")
+    has_media = False
+    image = payload.get("image") or payload.get("image_base64") or payload.get("image_url")
+    if image:
+        url = None
+        if isinstance(image, dict):
+            if image.get("url"):
+                url = image.get("url")
+            elif image.get("data"):
+                mime = image.get("mime_type") or "image/png"
+                url = f"data:{mime};base64,{image.get('data')}"
+            elif image.get("base64"):
+                mime = image.get("mime_type") or "image/png"
+                url = f"data:{mime};base64,{image.get('base64')}"
+        elif isinstance(image, str):
+            if image.startswith("http") or image.startswith("data:"):
+                url = image
+            else:
+                url = f"data:image/png;base64,{image}"
+        if url:
+            has_media = True
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+    audio = payload.get("audio") or payload.get("audio_base64")
+    if audio:
+        data = None
+        fmt = None
+        if isinstance(audio, dict):
+            data = audio.get("data") or audio.get("base64")
+            fmt = audio.get("format")
+            mime = audio.get("mime_type")
+            if not fmt and mime and "/" in mime:
+                fmt = mime.split("/")[-1]
+        elif isinstance(audio, str):
+            data = audio
+        if data:
+            if not fmt:
+                fmt = "wav"
+            has_media = True
+            parts.append({"type": "input_audio", "input_audio": {"data": data, "format": fmt}})
+    if has_media:
+        if text:
+            parts.insert(0, {"type": "text", "text": text})
+        payload["messages"] = [{"role": "user", "content": parts}]
+    else:
+        payload["messages"] = [{"role": "user", "content": text or ""}]
+    return payload
+
 @APP.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(request: Request, full_path: str):
+    is_unified = full_path in ["v1/unified", "v1/unified/"] and request.method == "POST"
     if full_path in ["v1", "v1/"] and request.method == "POST":
         full_path = "v1/chat/completions"
-    if not any(full_path.startswith(p) for p in ["v1", "v1/chat/completions", "v1/models", "chat/completions", "models"]):
+    if is_unified:
+        full_path = "v1/chat/completions"
+    if not any(full_path.startswith(p) for p in ["v1", "v1/chat/completions", "v1/models", "v1/unified", "chat/completions", "models"]):
         return JSONResponse({"error": "Not found"}, 404)
     
     # Model List intercept
@@ -1015,6 +1069,8 @@ async def proxy(request: Request, full_path: str):
     body_bytes = await request.body()
     try:
         body_json = json.loads(body_bytes)
+        if full_path == "v1/chat/completions" and (is_unified or body_json.get("unified")):
+            body_json = normalize_unified_payload(body_json)
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
             # Strictly use gemini-2.5-flash-lite as requested (2026 new model)
