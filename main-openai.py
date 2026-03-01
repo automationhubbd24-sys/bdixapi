@@ -798,8 +798,48 @@ async def auth_middleware(request: Request, call_next):
             return RedirectResponse("/admin/login")
     return await call_next(request)
 
-@APP.get("/", response_class=RedirectResponse)
-async def root(): return "/admin/login"
+@APP.get("/")
+async def root():
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>SalesmanChatbot API</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+        <style>
+            body { font-family: 'Inter', sans-serif; background-color: #0f172a; }
+            .glow { text-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
+        </style>
+    </head>
+    <body class="flex items-center justify-center min-h-screen">
+        <div class="text-center p-8 border border-slate-800 rounded-2xl bg-slate-900/50 backdrop-blur-xl shadow-2xl">
+            <div class="mb-6 flex justify-center">
+                <div class="p-4 bg-blue-500/10 rounded-full animate-pulse">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </div>
+            </div>
+            <h1 class="text-3xl font-bold text-white mb-2 tracking-tight uppercase glow">SalesmanChatbot LLM</h1>
+            <p class="text-blue-400 font-medium tracking-widest text-xs uppercase mb-8">is working on background</p>
+            <div class="flex items-center justify-center gap-2 text-slate-500 text-sm">
+                <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                </span>
+                API Gateway Online
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
+
+@APP.get("/v1")
+async def v1_root():
+    return await root()
 
 @APP.get("/admin/login", response_class=HTMLResponse)
 async def login_page(request: Request):
