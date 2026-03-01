@@ -462,6 +462,10 @@ if not KEYS_DATA:
 
 print(f"Loaded {len(KEYS_DATA)} keys.")
 
+from datetime import datetime, timezone
+
+# ... rest of imports ...
+
 # -------------------------
 # Key state & pool
 # -------------------------
@@ -481,35 +485,51 @@ class KeyState:
         self.minute_start_time = time.time()
         
         # Initialize usage from DB
-        self.usage_day = key_data.get("usage_day", 0)
+        db_usage = key_data.get("usage_day", 0)
+        last_used_str = key_data.get("last_used", "")
         
-        # Reset day count if last used was yesterday (simple check)
-        # In production, check 'last_used_at' date vs today
-        self.day_start_time = time.time() 
+        # Reset day count if last used was NOT today (UTC)
+        today_date = datetime.now(timezone.utc).date()
+        try:
+            if last_used_str:
+                # Format expected: '2026-02-28 07:43:28' (from our update logic)
+                last_used_date = datetime.strptime(last_used_str.split()[0], '%Y-%m-%d').date()
+                if last_used_date < today_date:
+                    print(f"INFO: Resetting key {self.key[:8]} for new day.")
+                    self.usage_day = 0
+                else:
+                    self.usage_day = db_usage
+            else:
+                self.usage_day = db_usage
+        except Exception:
+            self.usage_day = db_usage
+            
+        self.last_check_date = today_date
 
     def is_available(self) -> bool:
-        now = time.time()
+        now_ts = time.time()
+        today_date = datetime.now(timezone.utc).date()
         
+        # Check for New Day Reset
+        if today_date > self.last_check_date:
+            print(f"DEBUG: New day detected ({today_date}). Resetting daily counts.")
+            self.usage_day = 0
+            self.last_check_date = today_date
+
         # Check Backoff (Temporary ban due to errors)
-        if now < self.banned_until:
+        if now_ts < self.banned_until:
             return False
             
         # Check/Reset Minute Limit
-        if now - self.minute_start_time >= 60:
+        if now_ts - self.minute_start_time >= 60:
             self.usage_minute = 0
-            self.minute_start_time = now
+            self.minute_start_time = now_ts
             
         # STRICT RPM CHECK
         if self.usage_minute >= self.rpm_limit:
             return False
             
-        # Check/Reset Day Limit
-        # Ideally we sync this reset with DB
-        if now - self.day_start_time >= 86400: # 24 hours
-            self.usage_day = 0
-            self.day_start_time = now
-            
-        # STRICT RPD CHECK (20 per day)
+        # STRICT RPD CHECK (Daily Limit)
         if self.usage_day >= self.rpd_limit:
             return False
             
@@ -840,6 +860,13 @@ async def catch_all(request: Request, full_path: str):
 
     incoming_headers: Dict[str, str] = {k:v for k,v in request.headers.items() if k.lower() not in ("host","content-length","transfer-encoding","connection")}
 
+    # -------------------------------------------------
+    # HARD FILTER: Only use proxy for chat completions
+    # -------------------------------------------------
+    use_proxy = False
+    if "chat/completions" in full_path:
+        use_proxy = True
+
     # /models -> random available key
     p_normal = full_path[len("v1/"):] if full_path.startswith("v1/") else full_path
     if p_normal == "models" or p_normal.startswith("models/"):
@@ -891,7 +918,7 @@ async def catch_all(request: Request, full_path: str):
                 
                 # Model Mapping: salesmanchatbot-pro -> gemini-2.5-flash
                 if "model" in body_json:
-                    if body_json["model"] == "salesmanchatbot-pro":
+                    if body_json["model"] in ["salesmanchatbot-pro", "salesmancahtbot-flash"]:
                         body_json["model"] = "gemini-2.5-flash" # Map to actual backend model
                 
                 # добавить thinking_config только если его нет
