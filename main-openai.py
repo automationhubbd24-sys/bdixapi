@@ -487,6 +487,7 @@ async def get_keys(request: Request):
         rows = await conn.fetch("SELECT id, provider, model, api, status, usage_today FROM api_list ORDER BY id DESC")
         await conn.close()
         
+        print(f"DEBUG: Fetched {len(rows)} keys from api_list.")
         keys = []
         for row in rows:
             keys.append(dict(row))
@@ -574,70 +575,47 @@ async def delete_key(api_key: str, request: Request):
 # -------------------------
 @APP.middleware("http")
 async def validate_api_key(request: Request, call_next):
-    # Public paths that don't need ANY check
-    public_paths = ["/health", "/favicon.ico", "/admin/login", "/admin/logout"]
-    
-    if request.url.path in public_paths:
+    path = request.url.path
+
+    # 1. Public paths (No auth needed)
+    public_paths = ["/health", "/favicon.ico", "/admin/login", "/admin/logout", "/v1"]
+    if path in public_paths:
         return await call_next(request)
-        
-    if request.url.path == "/":
+    
+    # Special public info path
+    if path.endswith("chat/completions") and request.method == "GET":
+        return await call_next(request)
+
+    # 2. Root redirect
+    if path == "/":
         return RedirectResponse(url="/admin/login")
 
-    # 1. Admin/Status Route Protection (Cookie-based)
-    if request.url.path.startswith("/admin") or request.url.path in ["/status", "/reload-keys"]:
+    # 3. Admin/Status Protection (Cookie-based)
+    if path.startswith("/admin") or path in ["/status", "/reload-keys"]:
         if not is_authenticated(request):
             return RedirectResponse(url="/admin/login")
         return await call_next(request)
 
-    # 2. Public /v1 info
-    if request.url.path == "/v1":
-        return await call_next(request)
-    
-    # Allow GET /v1/chat/completions without auth (just for status message)
-    if request.method == "GET" and request.url.path.endswith("chat/completions"):
-        return await call_next(request)
-
-    # 3. API Key Check for Proxy Routes
+    # 4. Proxy API Key Check (Header or Query)
     auth_header = request.headers.get("Authorization")
+    api_key = None
+    
     if not auth_header:
-        # Also check query param 'key' for some clients
         api_key = request.query_params.get("key")
-        if not api_key:
-            return JSONResponse(status_code=401, content={"error": "Missing API Key. Please provide a valid key in Authorization header or 'key' query parameter."})
     else:
-        # Extract Bearer token
         try:
             scheme, api_key = auth_header.split()
             if scheme.lower() != 'bearer':
-                return JSONResponse(status_code=401, content={"error": "Invalid authentication scheme. Use Bearer."})
+                return JSONResponse(status_code=401, content={"error": "Invalid auth scheme. Use Bearer."})
         except ValueError:
              return JSONResponse(status_code=401, content={"error": "Invalid Authorization header format."})
 
-    # Validate the key against our list (simple check: is it in our loaded keys?)
-    # NOTE: In a real production system, you might want a separate list of "client keys" vs "upstream keys".
-    # For now, we assume the client must provide ONE of the valid upstream keys to use the service.
-    # OR we can just check if it's a non-empty string if we want to allow any key format 
-    # but still require SOMETHING. 
-    # Given the user's request "api key sara keo connect korte parbe na", we enforce strict checking.
-    
-    # Optimization: Convert list to set for O(1) lookup if list is large, but for <100 keys list is fine.
-    # if api_key not in KEYS_LIST:
-    #    return JSONResponse(status_code=403, content={"error": "Invalid API Key."})
-    
-    # Correction: The user wants to prevent unauthorized access.
-    # Since this is a proxy, clients usually pass a "dummy" key or one of the real keys.
-    # If we want to secure the PROXY itself, we should have a "PROXY_ACCESS_KEY".
-    # Let's use ADMIN_TOKEN as a simple access key for now, OR require the client to pass
-    # a valid Gemini key that we have in our pool.
-    
-    # Decision: To keep it simple and compatible with OpenAI clients, 
-    # we will require the client to send a key that matches 'ADMIN_TOKEN' 
-    # OR one of the keys in our pool.
-    
-    is_valid_key = False
-    if api_key == ADMIN_TOKEN:
-        is_valid_key = True
-    elif 'POOL' in globals():
+    if not api_key:
+        return JSONResponse(status_code=401, content={"error": "Missing API Key."})
+
+    # Validate API Key against pool
+    is_valid_key = (api_key == ADMIN_TOKEN)
+    if not is_valid_key and 'POOL' in globals():
         for s in POOL.states:
             if s.key == api_key:
                 is_valid_key = True
