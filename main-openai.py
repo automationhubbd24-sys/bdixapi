@@ -205,9 +205,12 @@ HTML_TEMPLATE = """
                 const res = await fetch('/admin/keys');
                 if(res.ok) {
                     allKeys = await res.json();
+                    console.log("Fetched keys:", allKeys);
                     renderManagementTable();
                 } else if(res.status === 401) {
                     window.location.href = '/admin/login';
+                } else {
+                    console.error("Failed to fetch keys:", res.status, await res.text());
                 }
             } catch(e) {
                 console.error("DB Fetch Error:", e);
@@ -591,9 +594,11 @@ async def validate_api_key(request: Request, call_next):
         return RedirectResponse(url="/admin/login")
 
     # 3. Admin/Status Protection (Cookie-based)
-    if path.startswith("/admin") or path in ["/status", "/reload-keys"]:
-        if not is_authenticated(request):
-            return RedirectResponse(url="/admin/login")
+    if (path.startswith("/admin") or path in ["/status", "/reload-keys"]):
+        # EXCLUDE login/logout paths from this check to avoid redirect loops
+        if path not in ["/admin/login", "/admin/logout"]:
+            if not is_authenticated(request):
+                return RedirectResponse(url="/admin/login")
         return await call_next(request)
 
     # 4. Proxy API Key Check (Header or Query)
@@ -1263,8 +1268,9 @@ async def login_page(request: Request):
 async def login_handler(username: str = Form(...), password: str = Form(...)):
     if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
         response = RedirectResponse(url="/admin", status_code=303)
-        # Set cookie valid for 30 days
-        response.set_cookie(key="admin_session", value=ADMIN_TOKEN, max_age=2592000, httponly=True)
+        # REMOVED max_age to make it a session-only cookie (expires on browser close)
+        # This helps with "refresh dilei jeno password caii" request
+        response.set_cookie(key="admin_session", value=ADMIN_TOKEN, httponly=True)
         return response
     return HTMLResponse(content=LOGIN_TEMPLATE.replace("Enter credentials", "<span style='color:#ef4444'>Invalid username or password</span>"), status_code=401)
 
