@@ -1124,11 +1124,69 @@ async def proxy(request: Request, full_path: str):
             key_state.mark_success()
             try:
                 resp_json = resp.json()
-                if "model" in resp_json:
-                    resp_json["model"] = "salesmanchatbot-pro"
-                return JSONResponse(content=resp_json, status_code=resp.status_code)
             except:
-                return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+                err_msg = "Invalid JSON response from upstream"
+                return JSONResponse(status_code=200, content={
+                    "id": f"err_{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "salesmanchatbot-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
+                            "finish_reason": "stop"
+                        }
+                    ],
+                    "error": err_msg
+                })
+            if isinstance(resp_json, dict):
+                choices = resp_json.get("choices")
+                if isinstance(choices, list) and len(choices) > 0:
+                    if "model" in resp_json:
+                        resp_json["model"] = "salesmanchatbot-pro"
+                    return JSONResponse(content=resp_json, status_code=resp.status_code)
+                candidates = resp_json.get("candidates")
+                if isinstance(candidates, list) and len(candidates) > 0:
+                    cand = candidates[0] or {}
+                    content = cand.get("content", {}) or {}
+                    parts = content.get("parts") or []
+                    text = ""
+                    if isinstance(parts, list):
+                        text = "".join([p.get("text", "") for p in parts if isinstance(p, dict)])
+                    if not text:
+                        text = cand.get("text", "") or resp_json.get("text", "") or resp_json.get("output_text", "")
+                    if not text:
+                        text = json.dumps(resp_json)
+                    return JSONResponse(status_code=200, content={
+                        "id": f"cmpl_{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": "salesmanchatbot-pro",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": text},
+                                "finish_reason": "stop"
+                            }
+                        ]
+                    })
+                err_msg = resp_json.get("error") or resp_json.get("message") or "Empty choices from upstream"
+                return JSONResponse(status_code=200, content={
+                    "id": f"err_{int(time.time())}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "salesmanchatbot-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
+                            "finish_reason": "stop"
+                        }
+                    ],
+                    "error": err_msg
+                })
+            return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
         except Exception:
             key_state.mark_failure()
             continue
