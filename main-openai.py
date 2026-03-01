@@ -29,6 +29,7 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 POSTGRES_URL = os.getenv("POSTGRES_URL")
 VPN_PROXY_URL = os.getenv("VPN_PROXY_URL")
+VPN_PROXY_POOL = os.getenv("VPN_PROXY_POOL", "")
 UPSTREAM_BASE_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
 DEFAULT_RPM = 5
@@ -45,6 +46,19 @@ GLOBAL_CONFIG = {
     "rph": DEFAULT_RPH,
     "rpd": DEFAULT_RPD
 }
+
+PROXY_URLS = [p.strip() for p in VPN_PROXY_POOL.split(",") if p.strip()]
+PROXY_INDEX = 0
+PROXY_LOCK = asyncio.Lock()
+
+async def get_proxy_url():
+    global PROXY_INDEX
+    if PROXY_URLS:
+        async with PROXY_LOCK:
+            proxy = PROXY_URLS[PROXY_INDEX % len(PROXY_URLS)]
+            PROXY_INDEX += 1
+        return proxy
+    return VPN_PROXY_URL
 
 # --- Models ---
 class ConfigUpdate(BaseModel):
@@ -866,8 +880,10 @@ async def update_config(update: ConfigUpdate, request: Request):
 @APP.post("/admin/keys")
 async def add_key(key: KeyCreate):
     if not POSTGRES_URL: return {"error": "No DB"}
+    provider = key.provider or "google"
+    model = (key.model or "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
     conn = await asyncpg.connect(POSTGRES_URL)
-    await conn.execute("INSERT INTO api_list (provider, model, api, status, usage_today) VALUES ($1, $2, $3, $4, 0)", key.provider, key.model, key.api, key.status)
+    await conn.execute("INSERT INTO api_list (provider, model, api, status, usage_today) VALUES ($1, $2, $3, $4, 0)", provider, model, key.api, key.status)
     await conn.close()
     return {"message": "Key added"}
 
@@ -1011,12 +1027,13 @@ async def proxy(request: Request, full_path: str):
     
     url = f"{UPSTREAM_BASE_GEMINI}/openai/{full_path.replace('v1/', '')}"
     
-    async with httpx.AsyncClient(timeout=300, verify=False, proxy=VPN_PROXY_URL) as client:
+    proxy_url = await get_proxy_url()
+    async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as client:
         try:
             if is_stream:
                 async def stream_gen():
                     # Keep client alive for the duration of the stream
-                    async with httpx.AsyncClient(timeout=300, verify=False, proxy=VPN_PROXY_URL) as stream_client:
+                    async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as stream_client:
                         async with stream_client.stream(request.method, url, headers=headers, content=content) as upstream:
                             if upstream.status_code >= 400:
                                 key_state.mark_failure()
