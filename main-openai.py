@@ -880,13 +880,15 @@ async def proxy(request: Request, full_path: str):
         try:
             if is_stream:
                 async def stream_gen():
-                    async with client.stream(request.method, url, headers=headers, content=content) as upstream:
-                        if upstream.status_code >= 400:
-                            key_state.mark_failure()
-                            yield await upstream.aread()
-                        else:
-                            key_state.mark_success()
-                            async for chunk in upstream.aiter_bytes(): yield chunk
+                    # Keep client alive for the duration of the stream
+                    async with httpx.AsyncClient(timeout=300, verify=False, proxy=VPN_PROXY_URL) as stream_client:
+                        async with stream_client.stream(request.method, url, headers=headers, content=content) as upstream:
+                            if upstream.status_code >= 400:
+                                key_state.mark_failure()
+                                yield await upstream.aread()
+                            else:
+                                key_state.mark_success()
+                                async for chunk in upstream.aiter_bytes(): yield chunk
                 return StreamingResponse(stream_gen(), media_type="text/event-stream")
             else:
                 resp = await client.request(request.method, url, headers=headers, content=content)
