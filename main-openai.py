@@ -574,37 +574,30 @@ async def delete_key(api_key: str, request: Request):
 # -------------------------
 @APP.middleware("http")
 async def validate_api_key(request: Request, call_next):
-    # Allow health checks, login, and favicon without auth
-    allowed_paths = ["/health", "/favicon.ico", "/admin/login", "/admin/logout"]
+    # Public paths that don't need ANY check
+    public_paths = ["/health", "/favicon.ico", "/admin/login", "/admin/logout"]
     
-    # Allow root to redirect
+    if request.url.path in public_paths:
+        return await call_next(request)
+        
     if request.url.path == "/":
-        return await call_next(request)
+        return RedirectResponse(url="/admin/login")
 
-    # Allow /v1 root to show status message
-    if request.url.path == "/v1":
-        return await call_next(request)
-    
-    # 1. Admin/Status/Key-Management Route Protection (Cookie-based)
-    # EVERYTHING under /admin, /status, /reload-keys must be authenticated
+    # 1. Admin/Status Route Protection (Cookie-based)
     if request.url.path.startswith("/admin") or request.url.path in ["/status", "/reload-keys"]:
-        if request.url.path in allowed_paths:
-             return await call_next(request)
         if not is_authenticated(request):
-            if request.url.path.startswith("/admin"):
-                return RedirectResponse(url="/admin/login")
-            return JSONResponse(status_code=401, content={"error": "Unauthorized Access. Please login."})
+            return RedirectResponse(url="/admin/login")
         return await call_next(request)
 
-    # 2. Allow specific public paths
-    if request.url.path in allowed_paths:
+    # 2. Public /v1 info
+    if request.url.path == "/v1":
         return await call_next(request)
     
     # Allow GET /v1/chat/completions without auth (just for status message)
     if request.method == "GET" and request.url.path.endswith("chat/completions"):
         return await call_next(request)
 
-    # 2. API Key Check (Header or Query)
+    # 3. API Key Check for Proxy Routes
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         # Also check query param 'key' for some clients
