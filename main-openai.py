@@ -189,9 +189,12 @@ HTML_TEMPLATE = """
 
         <div id="content-nodes" class="tab-content">
             <div class="card overflow-hidden mb-8 p-4"> <!-- Reduced padding -->
-                <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2"> <!-- Smaller header -->
-                    <i data-lucide="list" class="h-4 w-4 text-slate-400"></i> Node Performance
-                </h2>
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-lg font-bold text-white flex items-center gap-2"> <!-- Smaller header -->
+                        <i data-lucide="list" class="h-4 w-4 text-slate-400"></i> Node Performance
+                    </h2>
+                    <input type="text" id="node-search-input" onkeyup="renderKeys()" placeholder="Search API nodes..." class="bg-slate-800 border border-slate-700 text-white px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-blue-500 w-48">
+                </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse">
                         <thead>
@@ -269,7 +272,8 @@ HTML_TEMPLATE = """
         let currentPage = 1;
         let currentNodesPage = 1; // For Node Performance table
         const keysPerPage = 10;
-        const revealedKeys = {};
+        let revealedNodeKeys = {}; // Store revealed keys for performance nodes
+        let revealedKeys = {}; // Store revealed keys for management table
 
         function showTab(tab) {
             document.getElementById('content-nodes').classList.toggle('hidden', tab !== 'nodes');
@@ -475,39 +479,65 @@ HTML_TEMPLATE = """
 
         function renderKeys() {
             const tbody = document.getElementById('keys-table-body');
+            const searchInput = document.getElementById('node-search-input');
+            const search = searchInput ? searchInput.value.toLowerCase() : "";
             const info = document.getElementById('nodes-pagination-info');
             const prev = document.getElementById('prev-nodes-page');
             const next = document.getElementById('next-nodes-page');
             
             if(!tbody) return;
             
-            const total = allNodes.length;
+            const filtered = allNodes.filter(k => {
+                return k.full_key.toLowerCase().includes(search) || k.key_preview.toLowerCase().includes(search);
+            });
+
+            const total = filtered.length;
             const totalPages = Math.ceil(total / keysPerPage) || 1;
             if(currentNodesPage > totalPages) currentNodesPage = totalPages;
             if(currentNodesPage < 1) currentNodesPage = 1;
 
             const start = (currentNodesPage - 1) * keysPerPage;
             const end = Math.min(start + keysPerPage, total);
-            const pageItems = allNodes.slice(start, end);
+            const pageItems = filtered.slice(start, end);
 
             if(info) info.innerText = `Showing ${total === 0 ? 0 : start + 1} to ${end} of ${total} nodes`;
             if(prev) prev.disabled = currentNodesPage === 1;
             if(next) next.disabled = currentNodesPage === totalPages;
 
-            tbody.innerHTML = pageItems.map(k => `
+            tbody.innerHTML = pageItems.map(k => {
+                const isRevealed = revealedNodeKeys[k.full_key];
+                const displayKey = isRevealed ? k.full_key : k.key_preview;
+                
+                return `
                 <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition">
-                    <td class="py-3 pl-2 font-mono text-xs text-slate-400">${k.key_preview}</td>
+                    <td class="py-3 pl-2 font-mono text-xs text-slate-400">
+                        <div class="flex items-center gap-2">
+                            <span>${displayKey}</span>
+                        </div>
+                    </td>
                     <td class="py-3 text-xs ${k.available_in > 0 ? "text-red-400" : "text-green-400"} font-medium">${k.available_in > 0 ? `Limited (${k.available_in}s)` : "Ready"}</td>
                     <td class="py-3 text-xs text-green-400">${k.success}</td>
                     <td class="py-3 text-xs text-red-400">${k.fail}</td>
                     <td class="py-3 text-xs text-slate-500">-</td>
                     <td class="py-3">
-                        <button onclick="copyToClipboard('${k.full_key}')" class="p-1 hover:text-blue-400 transition" title="Copy Full Key">
-                            <i data-lucide="copy" class="h-3 w-3"></i>
-                        </button>
+                        <div class="flex items-center gap-2">
+                            <button onclick="toggleNodeReveal('${k.full_key}')" class="p-1 hover:text-blue-400 transition" title="${isRevealed ? 'Hide' : 'Show'} Key">
+                                <i data-lucide="${isRevealed ? 'eye-off' : 'eye'}" class="h-3 w-3"></i>
+                            </button>
+                            <button onclick="copyToClipboard('${k.full_key}')" class="p-1 hover:text-blue-400 transition" title="Copy Full Key">
+                                <i data-lucide="copy" class="h-3 w-3"></i>
+                            </button>
+                        </div>
                     </td>
-                </tr>`).join('');
+                </tr>`;
+            }).join('');
             lucide.createIcons();
+        }
+
+        function toggleNodeReveal(fullKey) {
+            if(revealedNodeKeys[fullKey]) delete revealedNodeKeys[fullKey];
+            else revealedNodeKeys[fullKey] = true;
+            renderKeys();
         }
         
         async function checkHealth() { const res = await fetch('/health'); const data = await res.json(); alert(JSON.stringify(data, null, 2)); }
