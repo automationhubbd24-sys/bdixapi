@@ -132,9 +132,24 @@ HTML_TEMPLATE = """
     <style>
         body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
         .card { background-color: #1e293b; border-radius: 0.75rem; padding: 1.5rem; border: 1px solid #334155; }
+        
+        /* Custom Toast Styles */
+        #toast-container { position: fixed; top: 1.5rem; right: 1.5rem; z-index: 1000; display: flex; flex-direction: column; gap: 0.75rem; }
+        .toast { 
+            background: #1e293b; border: 1px solid #334155; color: #e2e8f0; 
+            padding: 1rem 1.25rem; border-radius: 0.75rem; min-width: 300px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            display: flex; align-items: center; gap: 0.75rem;
+            animation: slideIn 0.3s ease-out forwards;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .toast.error { border-left: 4px solid #f87171; }
+        .toast.success { border-left: 4px solid #4ade80; }
+        .toast.info { border-left: 4px solid #60a5fa; }
     </style>
 </head>
 <body class="p-8">
+    <div id="toast-container"></div>
     <div class="max-w-6xl mx-auto">
         <header class="mb-8 flex justify-between items-center">
             <div>
@@ -278,6 +293,31 @@ HTML_TEMPLATE = """
 
     <script>
         lucide.createIcons();
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            let icon = 'info';
+            if(type === 'success') icon = 'check-circle';
+            if(type === 'error') icon = 'alert-circle';
+            
+            toast.innerHTML = `
+                <i data-lucide="${icon}" class="h-5 w-5 ${type === 'success' ? 'text-green-400' : type === 'error' ? 'text-red-400' : 'text-blue-400'}"></i>
+                <span class="text-sm font-medium">${message}</span>
+            `;
+            container.appendChild(toast);
+            lucide.createIcons();
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                toast.style.transition = 'all 0.3s ease-in';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
         let allKeys = [];
         let allNodes = []; // Global store for performance nodes
         let currentPage = 1;
@@ -337,12 +377,12 @@ HTML_TEMPLATE = """
                     body: JSON.stringify({ rpm, rph, rpd })
                 });
                 if(res.ok) {
-                    alert("Global limits updated successfully!");
+                    showToast("Global limits updated successfully!", "success");
                     fetchStats();
                 } else {
-                    alert("Failed to update limits");
+                    showToast("Failed to update limits", "error");
                 }
-            } catch(e) { alert("Error: " + e.message); }
+            } catch(e) { showToast("Error: " + e.message, "error"); }
         }
 
         async function fetchDBKeys() {
@@ -460,9 +500,10 @@ HTML_TEMPLATE = """
         async function copyToClipboard(text) {
             try {
                 await navigator.clipboard.writeText(text);
-                alert("Copied to clipboard!");
+                showToast("Key copied to clipboard!", "success");
             } catch (err) {
                 console.error('Failed to copy: ', err);
+                showToast("Failed to copy key", "error");
             }
         }
 
@@ -471,15 +512,42 @@ HTML_TEMPLATE = """
                 const res = await fetch(`/admin/keys/id/${id}/reveal`);
                 const data = await res.json();
                 if(data.api) { copyToClipboard(data.api); }
-            } catch(e) { alert("Failed: " + e.message); }
+            } catch(e) { showToast("Failed: " + e.message, "error"); }
         }
 
         async function deleteKey(id) {
             if(!confirm("Delete this key?")) return;
             try {
                 await fetch(`/admin/keys/id/${id}`, { method: 'DELETE' });
+                showToast("Key deleted successfully", "info");
                 fetchDBKeys();
-            } catch(e) { alert("Failed: " + e.message); }
+            } catch(e) { showToast("Failed: " + e.message, "error"); }
+        }
+
+        async function addKey() {
+            const api = prompt("Enter API Key:");
+            if(!api) return;
+            const provider = prompt("Provider (google/gemini):", "google");
+            
+            try {
+                const res = await fetch('/admin/keys', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ api, provider, status: 'active', model: 'default' })
+                });
+                if(res.status === 401) { window.location.href = '/admin/login'; return; }
+                const data = await res.json();
+                if(res.ok) {
+                    showToast(data.message || "Key added successfully", "success");
+                    fetchDBKeys();
+                } else {
+                    showToast(data.error || "Failed to add key", "error");
+                }
+            } catch(e) {
+                showToast("Error adding key", "error");
+            }
         }
 
         function changePage(delta) { currentPage += delta; renderManagementTable(); }
