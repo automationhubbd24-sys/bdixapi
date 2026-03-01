@@ -134,7 +134,7 @@ HTML_TEMPLATE = """
                     Key Management
                 </h2>
                 <div class="flex gap-4">
-                     <input type="text" id="search-input" onkeyup="renderManagementTable(allKeys)" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                     <input type="text" id="search-input" onkeyup="renderManagementTable()" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                      <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
                         <i data-lucide="plus" class="h-4 w-4"></i> Add Key
                     </button>
@@ -203,26 +203,46 @@ HTML_TEMPLATE = """
         async function fetchDBKeys() {
             try {
                 const res = await fetch('/admin/keys');
-                if(res.ok) {
-                    allKeys = await res.json();
-                    console.log("Fetched keys:", allKeys);
-                    renderManagementTable();
-                } else if(res.status === 401) {
+                if(res.status === 401) {
                     window.location.href = '/admin/login';
-                } else {
-                    console.error("Failed to fetch keys:", res.status, await res.text());
+                    return;
                 }
+                if(!res.ok) {
+                    const msg = await res.text();
+                    renderManagementTable(msg || "Failed to load keys");
+                    return;
+                }
+                const data = await res.json();
+                if(!Array.isArray(data)) {
+                    renderManagementTable(data.error || "Failed to load keys");
+                    return;
+                }
+                allKeys = data;
+                renderManagementTable();
             } catch(e) {
-                console.error("DB Fetch Error:", e);
+                renderManagementTable("Failed to load keys");
             }
         }
 
-        function renderManagementTable() {
+        function renderManagementTable(message = "") {
             const tbody = document.getElementById('manage-keys-body');
             const search = document.getElementById('search-input').value.toLowerCase();
-            
+            const paginationInfo = document.getElementById('pagination-info');
+            const prevBtn = document.getElementById('prev-page');
+            const nextBtn = document.getElementById('next-page');
+            const pageNumbers = document.getElementById('page-numbers');
+
             tbody.innerHTML = '';
-            
+            pageNumbers.innerHTML = '';
+
+            if(message) {
+                tbody.innerHTML = `<tr><td class="py-4 pl-2 text-sm text-red-400" colspan="7">${message}</td></tr>`;
+                paginationInfo.innerText = "Showing 0 to 0 of 0 keys";
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                return;
+            }
+
             const filtered = allKeys.filter(k => 
                 (k.api && k.api.toLowerCase().includes(search)) || 
                 (k.provider && k.provider.toLowerCase().includes(search)) ||
@@ -240,13 +260,17 @@ HTML_TEMPLATE = """
             const endIdx = Math.min(startIdx + keysPerPage, totalKeys);
             const pageKeys = filtered.slice(startIdx, endIdx);
 
-            // Update Pagination UI
-            document.getElementById('pagination-info').innerText = `Showing ${totalKeys > 0 ? startIdx + 1 : 0} to ${endIdx} of ${totalKeys} keys`;
-            document.getElementById('prev-page').disabled = currentPage === 1;
-            document.getElementById('next-page').disabled = currentPage === totalPages;
+            if(totalKeys === 0) {
+                tbody.innerHTML = `<tr><td class="py-4 pl-2 text-sm text-slate-400" colspan="7">No keys found</td></tr>`;
+                paginationInfo.innerText = "Showing 0 to 0 of 0 keys";
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                return;
+            }
 
-            const pageNumbers = document.getElementById('page-numbers');
-            pageNumbers.innerHTML = '';
+            paginationInfo.innerText = `Showing ${startIdx + 1} to ${endIdx} of ${totalKeys} keys`;
+            prevBtn.disabled = currentPage === 1;
+            nextBtn.disabled = currentPage === totalPages;
             
             // Show only a few page numbers around current page
             for(let i = 1; i <= totalPages; i++) {
@@ -482,22 +506,25 @@ async def get_keys(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not POSTGRES_URL:
-        return []
+        return JSONResponse({"error": "PostgreSQL not configured"}, status_code=500)
         
     try:
         conn = await asyncpg.connect(POSTGRES_URL)
-        # Fetching all keys from api_list table as requested
-        rows = await conn.fetch("SELECT id, provider, model, api, status, usage_today FROM api_list ORDER BY id DESC")
+        rows = await conn.fetch("""
+            SELECT id, provider, model, api, status, usage_today
+            FROM api_list
+            WHERE (provider ILIKE '%google%' OR provider ILIKE '%gemini%')
+            ORDER BY id DESC
+        """)
         await conn.close()
         
-        print(f"DEBUG: Fetched {len(rows)} keys from api_list.")
         keys = []
         for row in rows:
             keys.append(dict(row))
         return keys
     except Exception as e:
         print(f"DB Error: {e}")
-        return []
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @APP.post("/admin/keys")
 async def add_key(key: KeyCreate, request: Request):
@@ -598,6 +625,8 @@ async def validate_api_key(request: Request, call_next):
         # EXCLUDE login/logout paths from this check to avoid redirect loops
         if path not in ["/admin/login", "/admin/logout"]:
             if not is_authenticated(request):
+                if path.startswith("/admin/keys"):
+                    return JSONResponse(status_code=401, content={"error": "Unauthorized"})
                 return RedirectResponse(url="/admin/login")
         return await call_next(request)
 
