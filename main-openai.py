@@ -168,10 +168,11 @@ HTML_TEMPLATE = """
         async function fetchStats() {
             try {
                 // Fetch stats (current keys in memory)
-                const res = await fetch('/status', {
-                    headers: { 'x-proxy-admin': ADMIN_TOKEN }
-                });
-                if(!res.ok) throw new Error("Auth failed");
+                const res = await fetch('/status');
+                if(!res.ok) {
+                    if(res.status === 401) window.location.href = '/admin/login';
+                    throw new Error("Auth failed");
+                }
                 const data = await res.json();
                 renderKeys(data.keys);
                 document.getElementById('key-count').innerText = data.keys.length;
@@ -185,12 +186,12 @@ HTML_TEMPLATE = """
 
         async function fetchDBKeys() {
             try {
-                const res = await fetch('/admin/keys', {
-                    headers: { 'x-proxy-admin': ADMIN_TOKEN }
-                });
+                const res = await fetch('/admin/keys');
                 if(res.ok) {
                     allKeys = await res.json();
                     renderManagementTable(allKeys);
+                } else if(res.status === 401) {
+                    window.location.href = '/admin/login';
                 }
             } catch(e) {
                 console.error("DB Fetch Error:", e);
@@ -246,11 +247,11 @@ HTML_TEMPLATE = """
                 const res = await fetch('/admin/keys', {
                     method: 'POST',
                     headers: { 
-                        'Content-Type': 'application/json',
-                        'x-proxy-admin': ADMIN_TOKEN 
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({ api, provider, status: 'active', model: 'default' })
                 });
+                if(res.status === 401) window.location.href = '/admin/login';
                 const data = await res.json();
                 alert(data.message || data.error);
                 fetchDBKeys();
@@ -263,9 +264,9 @@ HTML_TEMPLATE = """
             if(!confirm("Delete this key?")) return;
             try {
                 const res = await fetch(`/admin/keys/${api}`, {
-                    method: 'DELETE',
-                    headers: { 'x-proxy-admin': ADMIN_TOKEN }
+                    method: 'DELETE'
                 });
+                if(res.status === 401) window.location.href = '/admin/login';
                 const data = await res.json();
                 // alert(data.message || data.error);
                 fetchDBKeys();
@@ -303,7 +304,8 @@ HTML_TEMPLATE = """
 
         async function reloadKeys() {
             if(confirm("Reload keys from database?")) {
-                await fetch('/reload-keys', { method: 'POST', headers: { 'x-proxy-admin': ADMIN_TOKEN } });
+                const res = await fetch('/reload-keys', { method: 'POST' });
+                if(res.status === 401) window.location.href = '/admin/login';
                 fetchStats();
             }
         }
@@ -383,9 +385,9 @@ load_dotenv()
 APP = FastAPI(title="SalesmenChatbot API")
 
 @APP.get("/admin/keys")
-async def get_keys(x_proxy_admin: str = Header(None)):
-    if x_proxy_admin != ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+async def get_keys(request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not POSTGRES_URL:
         return {"error": "PostgreSQL not configured"}
@@ -408,9 +410,9 @@ async def get_keys(x_proxy_admin: str = Header(None)):
         return {"error": str(e)}
 
 @APP.post("/admin/keys")
-async def add_key(key: KeyCreate, x_proxy_admin: str = Header(None)):
-    if x_proxy_admin != ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+async def add_key(key: KeyCreate, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not POSTGRES_URL:
         return {"error": "PostgreSQL not configured"}
@@ -427,9 +429,9 @@ async def add_key(key: KeyCreate, x_proxy_admin: str = Header(None)):
         return {"error": str(e)}
 
 @APP.put("/admin/keys/{api_key}")
-async def update_key(api_key: str, update: KeyUpdate, x_proxy_admin: str = Header(None)):
-    if x_proxy_admin != ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+async def update_key(api_key: str, update: KeyUpdate, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
         
     if not POSTGRES_URL:
         return {"error": "PostgreSQL not configured"}
@@ -466,9 +468,9 @@ async def update_key(api_key: str, update: KeyUpdate, x_proxy_admin: str = Heade
         return {"error": str(e)}
 
 @APP.delete("/admin/keys/{api_key}")
-async def delete_key(api_key: str, x_proxy_admin: str = Header(None)):
-    if x_proxy_admin != ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+async def delete_key(api_key: str, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
         
     if not POSTGRES_URL:
         return {"error": "PostgreSQL not configured"}
@@ -486,9 +488,8 @@ async def delete_key(api_key: str, x_proxy_admin: str = Header(None)):
 # -------------------------
 @APP.middleware("http")
 async def validate_api_key(request: Request, call_next):
-    # Allow health checks, root (login), admin routes, and favicon without auth
-    # Also allow /v1 root to show status message (but subpaths need auth)
-    allowed_paths = ["/", "/health", "/status", "/reload-keys", "/favicon.ico", "/admin", "/admin/login", "/admin/logout", "/v1"]
+    # Allow health checks, root (login), and favicon without auth
+    allowed_paths = ["/", "/health", "/favicon.ico", "/admin/login", "/admin/logout", "/v1"]
     
     # Allow GET /v1/chat/completions without auth (just for status message)
     if request.method == "GET" and request.url.path.endswith("chat/completions"):
@@ -497,7 +498,15 @@ async def validate_api_key(request: Request, call_next):
     if request.url.path in allowed_paths:
         return await call_next(request)
     
-    # Check for Authorization header
+    # 1. Admin/Status/Key-Management Route Protection (Cookie-based)
+    if request.url.path.startswith("/admin") or request.url.path in ["/status", "/reload-keys"]:
+        if not is_authenticated(request):
+            if request.url.path.startswith("/admin"):
+                return RedirectResponse(url="/admin/login")
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+        return await call_next(request)
+
+    # 2. API Key Check (Header or Query)
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         # Also check query param 'key' for some clients
@@ -1346,16 +1355,19 @@ async def get_status(request: Request):
 async def reload_keys(request: Request):
     if not is_authenticated(request):
         raise HTTPException(401, "Unauthorized")
-    global KEYS_DATA, POOL
-    KEYS_DATA = load_keys_from_supabase()
-    if not KEYS_DATA:
-        KEYS_DATA = load_keys_from_file(KEYS_FILE)
+    global POOL
+    keys = await load_keys_from_postgres()
+    if not keys:
+        loop = asyncio.get_event_loop()
+        keys = await loop.run_in_executor(None, load_keys_from_supabase)
+    if not keys:
+        keys = load_keys_from_file(KEYS_FILE)
     
-    if not KEYS_DATA:
+    if not keys:
         return JSONResponse({"error": "No keys found"}, status_code=500)
         
-    POOL = KeyPool(KEYS_DATA)
-    return JSONResponse({"reloaded": True, "num_keys": len(KEYS_DATA)})
+    POOL = KeyPool(keys)
+    return JSONResponse({"reloaded": True, "num_keys": len(keys)})
 
 # -------------------------
 # Run note:
