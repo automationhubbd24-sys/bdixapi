@@ -189,8 +189,9 @@ HTML_TEMPLATE = """
                     throw new Error("Auth failed");
                 }
                 const data = await res.json();
-                renderKeys(data.keys);
-                document.getElementById('key-count').innerText = data.keys.length;
+                // 'data' is already the list of key status objects
+                renderKeys(data);
+                document.getElementById('key-count').innerText = data.length;
 
                 // Also fetch all keys from DB for management table
                 fetchDBKeys();
@@ -576,22 +577,34 @@ async def delete_key(api_key: str, request: Request):
 # -------------------------
 @APP.middleware("http")
 async def validate_api_key(request: Request, call_next):
-    # Allow health checks, root (login), and favicon without auth
-    allowed_paths = ["/", "/health", "/favicon.ico", "/admin/login", "/admin/logout", "/v1"]
+    # Allow health checks, login, and favicon without auth
+    allowed_paths = ["/health", "/favicon.ico", "/admin/login", "/admin/logout"]
     
-    # Allow GET /v1/chat/completions without auth (just for status message)
-    if request.method == "GET" and request.url.path.endswith("chat/completions"):
+    # Allow root to redirect
+    if request.url.path == "/":
         return await call_next(request)
-    
-    if request.url.path in allowed_paths:
+
+    # Allow /v1 root to show status message
+    if request.url.path == "/v1":
         return await call_next(request)
     
     # 1. Admin/Status/Key-Management Route Protection (Cookie-based)
+    # EVERYTHING under /admin, /status, /reload-keys must be authenticated
     if request.url.path.startswith("/admin") or request.url.path in ["/status", "/reload-keys"]:
+        if request.url.path in allowed_paths:
+             return await call_next(request)
         if not is_authenticated(request):
             if request.url.path.startswith("/admin"):
                 return RedirectResponse(url="/admin/login")
-            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+            return JSONResponse(status_code=401, content={"error": "Unauthorized Access. Please login."})
+        return await call_next(request)
+
+    # 2. Allow specific public paths
+    if request.url.path in allowed_paths:
+        return await call_next(request)
+    
+    # Allow GET /v1/chat/completions without auth (just for status message)
+    if request.method == "GET" and request.url.path.endswith("chat/completions"):
         return await call_next(request)
 
     # 2. API Key Check (Header or Query)
