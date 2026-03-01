@@ -926,3 +926,7 @@ async def proxy(request: Request, full_path: str):
         except Exception as e:
             key_state.mark_failure()
             return JSONResponse({"error": str(e)}, 502)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(APP, host="0.0.0.0", port=3000)
