@@ -898,7 +898,9 @@ async def reload():
 
 @APP.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy(request: Request, full_path: str):
-    if not any(full_path.startswith(p) for p in ["v1/chat/completions", "v1/models", "chat/completions", "models"]):
+    if full_path in ["v1", "v1/"] and request.method == "POST":
+        full_path = "v1/chat/completions"
+    if not any(full_path.startswith(p) for p in ["v1", "v1/chat/completions", "v1/models", "chat/completions", "models"]):
         return JSONResponse({"error": "Not found"}, 404)
     
     # Model List intercept
@@ -917,8 +919,8 @@ async def proxy(request: Request, full_path: str):
         body_json = json.loads(body_bytes)
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
-            # Using gemini-2.0-flash as it's the stable latest version
-            body_json["model"] = "gemini-2.0-flash"
+            # You can change 'gemini-2.5-flash-lite' to 'gemini-1.5-pro' if needed
+            body_json["model"] = "gemini-2.5-flash-lite"
         content = json.dumps(body_json).encode('utf-8')
     except:
         content = body_bytes
@@ -942,16 +944,33 @@ async def proxy(request: Request, full_path: str):
                                 key_state.mark_success()
                                 async for chunk in upstream.aiter_bytes():
                                     # For stream, we should also try to replace model name in the JSON chunks
-                                     if b'"model":"' in chunk:
-                                         chunk = chunk.replace(b'"gemini-2.0-flash"', b'"salesmanchatbot-pro"')
-                                     yield chunk
+                                    if b'"model":"' in chunk:
+                                        chunk = chunk.replace(b'"gemini-2.5-flash-lite"', b'"salesmanchatbot-pro"')
+                                    yield chunk
                 return StreamingResponse(stream_gen(), media_type="text/event-stream")
             else:
                 resp = await client.request(request.method, url, headers=headers, content=content)
                 if resp.status_code >= 400:
                     key_state.mark_failure()
-                    # Return error as JSON to help n8n understand
-                    return JSONResponse(status_code=resp.status_code, content=resp.json() if "application/json" in resp.headers.get("content-type", "") else {"error": resp.text})
+                    try:
+                        err_payload = resp.json()
+                        err_msg = err_payload.get("error", {}).get("message") or err_payload.get("error") or resp.text
+                    except:
+                        err_msg = resp.text
+                    return JSONResponse(status_code=200, content={
+                        "id": f"err_{int(time.time())}",
+                        "object": "chat.completion",
+                        "created": int(time.time()),
+                        "model": "salesmanchatbot-pro",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
+                                "finish_reason": "stop"
+                            }
+                        ],
+                        "error": err_msg
+                    })
                 
                 key_state.mark_success()
                 
@@ -965,7 +984,21 @@ async def proxy(request: Request, full_path: str):
                     return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
         except Exception as e:
             key_state.mark_failure()
-            return JSONResponse({"error": str(e)}, 502)
+            err_msg = str(e)
+            return JSONResponse(status_code=200, content={
+                "id": f"err_{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "salesmanchatbot-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
+                        "finish_reason": "stop"
+                    }
+                ],
+                "error": err_msg
+            })
 
 if __name__ == "__main__":
     import uvicorn
