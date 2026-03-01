@@ -135,6 +135,9 @@ HTML_TEMPLATE = """
                 </h2>
                 <div class="flex gap-4">
                      <input type="text" id="search-input" onkeyup="renderManagementTable()" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                     <select id="provider-filter" onchange="renderManagementTable()" class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                        <option value="all">All Providers</option>
+                     </select>
                      <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
                         <i data-lucide="plus" class="h-4 w-4"></i> Add Key
                     </button>
@@ -179,6 +182,7 @@ HTML_TEMPLATE = """
         let allKeys = []; // Store all keys for client-side search
         let currentPage = 1;
         const keysPerPage = 10;
+        const revealedKeys = {};
 
         async function fetchStats() {
             try {
@@ -218,15 +222,29 @@ HTML_TEMPLATE = """
                     return;
                 }
                 allKeys = data;
+                updateProviderFilter();
                 renderManagementTable();
             } catch(e) {
                 renderManagementTable("Failed to load keys");
             }
         }
 
+        function updateProviderFilter() {
+            const select = document.getElementById('provider-filter');
+            const current = select.value || 'all';
+            const providers = new Set();
+            allKeys.forEach(k => {
+                if(k.provider) providers.add(k.provider);
+            });
+            const options = ['all', ...Array.from(providers).sort((a,b) => a.localeCompare(b))];
+            select.innerHTML = options.map(p => `<option value="${p}">${p === 'all' ? 'All Providers' : p}</option>`).join('');
+            select.value = options.includes(current) ? current : 'all';
+        }
+
         function renderManagementTable(message = "") {
             const tbody = document.getElementById('manage-keys-body');
             const search = document.getElementById('search-input').value.toLowerCase();
+            const provider = document.getElementById('provider-filter').value;
             const paginationInfo = document.getElementById('pagination-info');
             const prevBtn = document.getElementById('prev-page');
             const nextBtn = document.getElementById('next-page');
@@ -243,11 +261,13 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            const filtered = allKeys.filter(k => 
-                (k.api && k.api.toLowerCase().includes(search)) || 
-                (k.provider && k.provider.toLowerCase().includes(search)) ||
-                (k.model && k.model.toLowerCase().includes(search))
-            );
+            const filtered = allKeys.filter(k => {
+                const matchesProvider = provider === 'all' || (k.provider && k.provider.toLowerCase() === provider.toLowerCase());
+                const matchesSearch = (k.key_preview && k.key_preview.toLowerCase().includes(search)) || 
+                    (k.provider && k.provider.toLowerCase().includes(search)) ||
+                    (k.model && k.model.toLowerCase().includes(search));
+                return matchesProvider && matchesSearch;
+            });
 
             // Pagination Logic
             const totalKeys = filtered.length;
@@ -292,7 +312,9 @@ HTML_TEMPLATE = """
                 const tr = document.createElement('tr');
                 tr.className = "border-b border-slate-800 hover:bg-slate-800/50 transition";
                 
-                const shortKey = k.api ? k.api.substring(0, 8) + "***" + k.api.substring(k.api.length - 3) : "N/A";
+                const shortKey = k.key_preview || "N/A";
+                const reveal = revealedKeys[k.id];
+                const showLabel = reveal ? "Hide" : "Show";
                 
                 tr.innerHTML = `
                     <td class="py-4 pl-2 text-sm text-slate-500">${k.id}</td>
@@ -300,10 +322,7 @@ HTML_TEMPLATE = """
                     <td class="py-4 text-sm text-slate-400">${k.model || '-'}</td>
                     <td class="py-4 font-mono text-sm text-slate-300">
                         <div class="flex items-center gap-2">
-                            <span>${shortKey}</span>
-                            <button onclick="copyToClipboard('${k.api}')" class="p-1 hover:text-blue-400 transition" title="Copy Key">
-                                <i data-lucide="copy" class="h-3 w-3"></i>
-                            </button>
+                            <span>${reveal || shortKey}</span>
                         </div>
                     </td>
                     <td class="py-4 text-sm">
@@ -313,12 +332,9 @@ HTML_TEMPLATE = """
                     </td>
                     <td class="py-4 text-sm text-slate-400 font-mono">${k.usage_today || 0}</td>
                     <td class="py-4 flex gap-2">
-                         <button onclick="toggleKeyStatus('${k.api}', '${k.status}')" class="p-1.5 text-slate-400 hover:bg-slate-700 rounded transition" title="Toggle Status">
-                            <i data-lucide="${k.status === 'active' ? 'eye' : 'eye-off'}" class="h-4 w-4"></i>
-                        </button>
-                        <button onclick="deleteKey('${k.api}')" class="p-1.5 text-red-400 hover:bg-red-500/20 rounded transition" title="Delete Key">
-                            <i data-lucide="trash-2" class="h-4 w-4"></i>
-                        </button>
+                         <button onclick="revealKey('${k.id}')" class="px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 rounded transition">${showLabel}</button>
+                         <button onclick="copyKey('${k.id}')" class="px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 rounded transition">Copy</button>
+                         <button onclick="deleteKey('${k.id}')" class="px-2 py-1 text-xs text-red-400 hover:bg-red-500/20 rounded transition">Delete</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -331,30 +347,43 @@ HTML_TEMPLATE = """
             renderManagementTable();
         }
 
-        async function copyToClipboard(text) {
-            try {
-                await navigator.clipboard.writeText(text);
-                alert("Key copied to clipboard!");
-            } catch (err) {
-                console.error('Failed to copy: ', err);
+        async function revealKey(keyId) {
+            if(revealedKeys[keyId]) {
+                delete revealedKeys[keyId];
+                renderManagementTable();
+                return;
             }
-        }
-
-        async function toggleKeyStatus(api, currentStatus) {
-            const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
             try {
-                const res = await fetch(`/admin/keys/${api}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: newStatus })
-                });
+                const res = await fetch(`/admin/keys/id/${keyId}/reveal`);
                 if(res.status === 401) window.location.href = '/admin/login';
-                fetchDBKeys();
+                if(!res.ok) return;
+                const data = await res.json();
+                if(data && data.api) {
+                    revealedKeys[keyId] = data.api;
+                    renderManagementTable();
+                }
             } catch(e) {
-                alert("Error updating status");
             }
         }
 
+        async function copyKey(keyId) {
+            try {
+                if(!revealedKeys[keyId]) {
+                    const res = await fetch(`/admin/keys/id/${keyId}/reveal`);
+                    if(res.status === 401) window.location.href = '/admin/login';
+                    if(!res.ok) return;
+                    const data = await res.json();
+                    if(data && data.api) {
+                        revealedKeys[keyId] = data.api;
+                    }
+                }
+                if(revealedKeys[keyId]) {
+                    await navigator.clipboard.writeText(revealedKeys[keyId]);
+                    alert("Key copied to clipboard!");
+                }
+            } catch(e) {
+            }
+        }
         async function addKey() {
             const api = prompt("Enter API Key:");
             if(!api) return;
@@ -377,10 +406,10 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function deleteKey(api) {
+        async function deleteKey(keyId) {
             if(!confirm("Delete this key?")) return;
             try {
-                const res = await fetch(`/admin/keys/${api}`, {
+                const res = await fetch(`/admin/keys/id/${keyId}`, {
                     method: 'DELETE'
                 });
                 if(res.status === 401) window.location.href = '/admin/login';
@@ -513,14 +542,27 @@ async def get_keys(request: Request):
         rows = await conn.fetch("""
             SELECT id, provider, model, api, status, usage_today
             FROM api_list
-            WHERE (provider ILIKE '%google%' OR provider ILIKE '%gemini%')
             ORDER BY id DESC
         """)
         await conn.close()
         
         keys = []
         for row in rows:
-            keys.append(dict(row))
+            api = row["api"] or ""
+            if len(api) >= 10:
+                key_preview = f"{api[:6]}***{api[-3:]}"
+            elif api:
+                key_preview = f"{api[:3]}***"
+            else:
+                key_preview = ""
+            keys.append({
+                "id": row["id"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "status": row["status"],
+                "usage_today": row["usage_today"],
+                "key_preview": key_preview
+            })
         return keys
     except Exception as e:
         print(f"DB Error: {e}")
@@ -595,6 +637,79 @@ async def delete_key(api_key: str, request: Request):
     try:
         conn = await asyncpg.connect(POSTGRES_URL)
         await conn.execute("DELETE FROM api_list WHERE api = $1", api_key)
+        await conn.close()
+        return {"message": "Key deleted successfully"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.get("/admin/keys/id/{key_id}/reveal")
+async def reveal_key(key_id: int, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        row = await conn.fetchrow("SELECT api FROM api_list WHERE id = $1", key_id)
+        await conn.close()
+        if not row:
+            return {"error": "Key not found"}
+        return {"api": row["api"]}
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.put("/admin/keys/id/{key_id}")
+async def update_key_by_id(key_id: int, update: KeyUpdate, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    fields = []
+    values = []
+    idx = 1
+    
+    if update.status is not None:
+        fields.append(f"status = ${idx}")
+        values.append(update.status)
+        idx += 1
+    if update.model is not None:
+        fields.append(f"model = ${idx}")
+        values.append(update.model)
+        idx += 1
+    if update.provider is not None:
+        fields.append(f"provider = ${idx}")
+        values.append(update.provider)
+        idx += 1
+        
+    if not fields:
+        return {"message": "No fields to update"}
+        
+    values.append(key_id)
+    
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        query = f"UPDATE api_list SET {', '.join(fields)} WHERE id = ${idx}"
+        await conn.execute(query, *values)
+        await conn.close()
+        return {"message": "Key updated successfully"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.delete("/admin/keys/id/{key_id}")
+async def delete_key_by_id(key_id: int, request: Request):
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        await conn.execute("DELETE FROM api_list WHERE id = $1", key_id)
         await conn.close()
         return {"message": "Key deleted successfully"}
     except Exception as e:
