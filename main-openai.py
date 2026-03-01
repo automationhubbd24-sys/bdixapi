@@ -260,6 +260,10 @@ async def validate_api_key(request: Request, call_next):
     # Also allow /v1 root to show status message (but subpaths need auth)
     allowed_paths = ["/", "/health", "/status", "/reload-keys", "/favicon.ico", "/admin", "/admin/login", "/admin/logout", "/v1"]
     
+    # Allow GET /v1/chat/completions without auth (just for status message)
+    if request.method == "GET" and request.url.path.endswith("chat/completions"):
+        return await call_next(request)
+    
     if request.url.path in allowed_paths:
         return await call_next(request)
     
@@ -774,15 +778,14 @@ def detect_stream_from_request(content_bytes: Optional[bytes], query_params: Dic
 # Auth Utilities
 # -------------------------
 def is_authenticated(request: Request) -> bool:
-    """Check if user is logged in via cookie or token."""
+    """Check if user is logged in via cookie only."""
     session_token = request.cookies.get("admin_session")
     if session_token == ADMIN_TOKEN:
         return True
     
-    # Fallback to header or query param for API access
-    auth_header = request.headers.get("x-proxy-admin")
-    query_token = request.query_params.get("token")
-    return is_admin(auth_header) or is_admin(query_token)
+    # Disabled header/query token for admin dashboard access as requested
+    # API endpoints still use Authorization header via validate_api_key middleware
+    return False
 
 # -------------------------
 # Templates
@@ -906,11 +909,19 @@ async def catch_all(request: Request, full_path: str):
     # Everything else should be 404 locally without touching proxy
     
     # 1. Local routes (already handled by specific decorators above, but just in case)
-    if full_path in ["", "health", "status", "reload-keys", "favicon.ico"]:
+    if full_path in ["", "health", "status", "reload-keys", "favicon.ico", "admin", "admin/login", "admin/logout", "v1"]:
         return JSONResponse(status_code=404, content={"error": "Not Found"})
         
+    # Special Handling for GET /v1/chat/completions (Browser Access)
+    if full_path.endswith("chat/completions") and request.method == "GET":
+        return JSONResponse({
+            "service": "SalesmenChatbot AI LLM",
+            "status": "operational",
+            "message": "SalesmenChatbot LLM is working. Please use POST method for API requests."
+        })
+
     # 2. Allow only valid OpenAI/Gemini paths
-    valid_prefixes = ["v1/chat/completions", "v1/models", "chat/completions", "models"]
+    valid_prefixes = ["v1/chat/completions", "v1/models", "chat/completions", "models", "api/external/v1"]
     is_valid_path = any(full_path.startswith(p) for p in valid_prefixes)
     
     if not is_valid_path:
