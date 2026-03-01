@@ -69,6 +69,9 @@ HTML_TEMPLATE = """
                  <button onclick="reloadKeys()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-white font-medium transition flex items-center gap-2">
                     <i data-lucide="refresh-cw" class="h-4 w-4"></i> Reload Config
                 </button>
+                <a href="/admin/logout" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-medium transition flex items-center gap-2">
+                    <i data-lucide="log-out" class="h-4 w-4"></i> Logout
+                </a>
             </div>
         </header>
 
@@ -156,14 +159,26 @@ HTML_TEMPLATE = """
                     </tbody>
                 </table>
             </div>
+            <!-- Pagination -->
+            <div class="flex justify-between items-center mt-6 text-sm text-slate-400">
+                <div id="pagination-info">Showing 1 to 10 of -- keys</div>
+                <div class="flex gap-2">
+                    <button onclick="changePage(-1)" id="prev-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
+                    <div id="page-numbers" class="flex gap-1">
+                        <!-- Numbers injected via JS -->
+                    </div>
+                    <button onclick="changePage(1)" id="next-page" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         lucide.createIcons();
-        const ADMIN_TOKEN = "changeme_local_only"; // In production, ask user to input this
-
+        
         let allKeys = []; // Store all keys for client-side search
+        let currentPage = 1;
+        const keysPerPage = 10;
 
         async function fetchStats() {
             try {
@@ -189,7 +204,7 @@ HTML_TEMPLATE = """
                 const res = await fetch('/admin/keys');
                 if(res.ok) {
                     allKeys = await res.json();
-                    renderManagementTable(allKeys);
+                    renderManagementTable();
                 } else if(res.status === 401) {
                     window.location.href = '/admin/login';
                 }
@@ -198,37 +213,82 @@ HTML_TEMPLATE = """
             }
         }
 
-        function renderManagementTable(keys) {
+        function renderManagementTable() {
             const tbody = document.getElementById('manage-keys-body');
             const search = document.getElementById('search-input').value.toLowerCase();
             
             tbody.innerHTML = '';
             
-            const filtered = keys.filter(k => 
+            const filtered = allKeys.filter(k => 
                 (k.api && k.api.toLowerCase().includes(search)) || 
                 (k.provider && k.provider.toLowerCase().includes(search)) ||
                 (k.model && k.model.toLowerCase().includes(search))
             );
 
-            filtered.forEach(k => {
+            // Pagination Logic
+            const totalKeys = filtered.length;
+            const totalPages = Math.ceil(totalKeys / keysPerPage) || 1;
+            
+            if(currentPage > totalPages) currentPage = totalPages;
+            if(currentPage < 1) currentPage = 1;
+
+            const startIdx = (currentPage - 1) * keysPerPage;
+            const endIdx = Math.min(startIdx + keysPerPage, totalKeys);
+            const pageKeys = filtered.slice(startIdx, endIdx);
+
+            // Update Pagination UI
+            document.getElementById('pagination-info').innerText = `Showing ${totalKeys > 0 ? startIdx + 1 : 0} to ${endIdx} of ${totalKeys} keys`;
+            document.getElementById('prev-page').disabled = currentPage === 1;
+            document.getElementById('next-page').disabled = currentPage === totalPages;
+
+            const pageNumbers = document.getElementById('page-numbers');
+            pageNumbers.innerHTML = '';
+            
+            // Show only a few page numbers around current page
+            for(let i = 1; i <= totalPages; i++) {
+                if(i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
+                    const btn = document.createElement('button');
+                    btn.innerText = i;
+                    btn.className = `px-3 py-1 rounded-md transition ${i === currentPage ? 'bg-blue-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-400'}`;
+                    btn.onclick = () => { currentPage = i; renderManagementTable(); };
+                    pageNumbers.appendChild(btn);
+                } else if (i === currentPage - 2 || i === currentPage + 2) {
+                    const span = document.createElement('span');
+                    span.innerText = '...';
+                    span.className = 'px-2 py-1 text-slate-600';
+                    pageNumbers.appendChild(span);
+                }
+            }
+
+            pageKeys.forEach(k => {
                 const tr = document.createElement('tr');
                 tr.className = "border-b border-slate-800 hover:bg-slate-800/50 transition";
                 
-                const shortKey = k.api ? k.api.substring(0, 12) + "..." : "N/A";
+                const shortKey = k.api ? k.api.substring(0, 8) + "***" + k.api.substring(k.api.length - 3) : "N/A";
                 
                 tr.innerHTML = `
-                    <td class="py-3 pl-2 text-sm text-slate-400">${k.id}</td>
-                    <td class="py-3 text-sm text-white font-mono">${k.provider}</td>
-                    <td class="py-3 text-sm text-slate-300">${k.model || '-'}</td>
-                    <td class="py-3 font-mono text-sm text-slate-500" title="${k.api}">${shortKey}</td>
-                    <td class="py-3 text-sm">
-                        <span class="${k.status === 'active' ? 'text-green-400' : 'text-red-400'}">
+                    <td class="py-4 pl-2 text-sm text-slate-500">${k.id}</td>
+                    <td class="py-4 text-sm text-white font-medium">${k.provider}</td>
+                    <td class="py-4 text-sm text-slate-400">${k.model || '-'}</td>
+                    <td class="py-4 font-mono text-sm text-slate-300">
+                        <div class="flex items-center gap-2">
+                            <span>${shortKey}</span>
+                            <button onclick="copyToClipboard('${k.api}')" class="p-1 hover:text-blue-400 transition" title="Copy Key">
+                                <i data-lucide="copy" class="h-3 w-3"></i>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="py-4 text-sm">
+                        <span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${k.status === 'active' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}">
                             ${k.status}
                         </span>
                     </td>
-                    <td class="py-3 text-sm text-slate-400">${k.usage_today || 0}</td>
-                    <td class="py-3 flex gap-2">
-                        <button onclick="deleteKey('${k.api}')" class="p-1 text-red-400 hover:bg-red-500/20 rounded">
+                    <td class="py-4 text-sm text-slate-400 font-mono">${k.usage_today || 0}</td>
+                    <td class="py-4 flex gap-2">
+                         <button onclick="toggleKeyStatus('${k.api}', '${k.status}')" class="p-1.5 text-slate-400 hover:bg-slate-700 rounded transition" title="Toggle Status">
+                            <i data-lucide="${k.status === 'active' ? 'eye' : 'eye-off'}" class="h-4 w-4"></i>
+                        </button>
+                        <button onclick="deleteKey('${k.api}')" class="p-1.5 text-red-400 hover:bg-red-500/20 rounded transition" title="Delete Key">
                             <i data-lucide="trash-2" class="h-4 w-4"></i>
                         </button>
                     </td>
@@ -236,6 +296,35 @@ HTML_TEMPLATE = """
                 tbody.appendChild(tr);
             });
             lucide.createIcons();
+        }
+
+        function changePage(delta) {
+            currentPage += delta;
+            renderManagementTable();
+        }
+
+        async function copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                alert("Key copied to clipboard!");
+            } catch (err) {
+                console.error('Failed to copy: ', err);
+            }
+        }
+
+        async function toggleKeyStatus(api, currentStatus) {
+            const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+            try {
+                const res = await fetch(`/admin/keys/${api}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+                if(res.status === 401) window.location.href = '/admin/login';
+                fetchDBKeys();
+            } catch(e) {
+                alert("Error updating status");
+            }
         }
 
         async function addKey() {
@@ -268,7 +357,6 @@ HTML_TEMPLATE = """
                 });
                 if(res.status === 401) window.location.href = '/admin/login';
                 const data = await res.json();
-                // alert(data.message || data.error);
                 fetchDBKeys();
             } catch(e) {
                 alert("Error deleting key");
@@ -286,11 +374,11 @@ HTML_TEMPLATE = """
                 const statusText = k.available_in > 0 ? `Rate Limited (${k.available_in}s)` : "Ready";
 
                 tr.innerHTML = `
-                    <td class="py-3 pl-2 font-mono text-sm text-slate-400">${k.key_preview}</td>
-                    <td class="py-3 ${statusColor} font-medium">${statusText}</td>
-                    <td class="py-3 text-green-400">${k.success}</td>
-                    <td class="py-3 text-red-400">${k.fail}</td>
-                    <td class="py-3 text-slate-500">-</td>
+                    <td class="py-4 pl-2 font-mono text-sm text-slate-400">${k.key_preview}</td>
+                    <td class="py-4 ${statusColor} font-medium">${statusText}</td>
+                    <td class="py-4 text-green-400">${k.success}</td>
+                    <td class="py-4 text-red-400">${k.fail}</td>
+                    <td class="py-4 text-slate-500">-</td>
                 `;
                 tbody.appendChild(tr);
             });
