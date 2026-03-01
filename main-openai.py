@@ -13,10 +13,24 @@ import json
 import httpx
 import random
 import string
+import asyncpg
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from pydantic import BaseModel
+
+class KeyCreate(BaseModel):
+    api: str
+    provider: str = "google"
+    model: str = "default"
+    status: str = "active"
+
+class KeyUpdate(BaseModel):
+    status: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+
 
 # ==========================================
 # FRONTEND TEMPLATE (Simple Dashboard)
@@ -27,7 +41,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Proxy Dashboard</title>
+    <title>SalesmenChatbot Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -44,45 +58,30 @@ HTML_TEMPLATE = """
             <div>
                 <h1 class="text-3xl font-bold text-white flex items-center gap-2">
                     <i data-lucide="server" class="h-8 w-8 text-blue-500"></i>
-                    Gemini Proxy Server
+                    SalesmenChatbot API
                 </h1>
-                <p class="text-slate-400 mt-2">Secure, Rotating API Gateway</p>
+                <p class="text-slate-400 mt-2">Secure Enterprise AI Gateway</p>
             </div>
             <div class="flex gap-4">
                 <button onclick="checkHealth()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition flex items-center gap-2">
                     <i data-lucide="activity" class="h-4 w-4"></i> Check Health
                 </button>
                  <button onclick="reloadKeys()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-white font-medium transition flex items-center gap-2">
-                    <i data-lucide="refresh-cw" class="h-4 w-4"></i> Reload Keys
+                    <i data-lucide="refresh-cw" class="h-4 w-4"></i> Reload Config
                 </button>
             </div>
         </header>
 
         <!-- Stats Grid -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             <div class="card">
                 <div class="flex justify-between items-start">
                     <div>
-                        <p class="text-slate-400 text-sm">Active Keys</p>
+                        <p class="text-slate-400 text-sm">Active Nodes</p>
                         <h3 class="text-3xl font-bold text-white mt-2" id="key-count">--</h3>
                     </div>
                     <div class="p-2 bg-blue-500/10 rounded-lg">
                         <i data-lucide="key" class="h-6 w-6 text-blue-500"></i>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <div class="flex justify-between items-start">
-                    <div>
-                        <p class="text-slate-400 text-sm">Proxy Status</p>
-                        <h3 class="text-lg font-bold text-white mt-2 flex items-center gap-2" id="proxy-status">
-                            <span class="status-dot status-ok"></span> Active
-                        </h3>
-                        <p class="text-xs text-slate-500 mt-1" id="proxy-region">Auto-Detecting...</p>
-                    </div>
-                    <div class="p-2 bg-purple-500/10 rounded-lg">
-                        <i data-lucide="globe" class="h-6 w-6 text-purple-500"></i>
                     </div>
                 </div>
             </div>
@@ -101,16 +100,16 @@ HTML_TEMPLATE = """
         </div>
 
         <!-- Keys Table -->
-        <div class="card overflow-hidden">
+        <div class="card overflow-hidden mb-8">
             <h2 class="text-xl font-bold text-white mb-6 flex items-center gap-2">
                 <i data-lucide="list" class="h-5 w-5 text-slate-400"></i>
-                API Key Performance
+                Node Performance
             </h2>
             <div class="overflow-x-auto">
                 <table class="w-full text-left border-collapse">
                     <thead>
                         <tr class="text-slate-400 text-sm border-b border-slate-700">
-                            <th class="pb-3 pl-2">Key Preview</th>
+                            <th class="pb-3 pl-2">Node ID</th>
                             <th class="pb-3">Status</th>
                             <th class="pb-3">Success</th>
                             <th class="pb-3">Failures</th>
@@ -123,14 +122,52 @@ HTML_TEMPLATE = """
                 </table>
             </div>
         </div>
+
+        <!-- Key Management Table -->
+        <div class="card overflow-hidden">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold text-white flex items-center gap-2">
+                    <i data-lucide="database" class="h-5 w-5 text-slate-400"></i>
+                    Key Management
+                </h2>
+                <div class="flex gap-4">
+                     <input type="text" id="search-input" onkeyup="renderManagementTable(allKeys)" placeholder="Search keys..." class="bg-slate-800 border border-slate-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                     <button onclick="addKey()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-white font-medium transition flex items-center gap-2">
+                        <i data-lucide="plus" class="h-4 w-4"></i> Add Key
+                    </button>
+                </div>
+            </div>
+            
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="text-slate-400 text-sm border-b border-slate-700">
+                            <th class="pb-3 pl-2">ID</th>
+                            <th class="pb-3">Provider</th>
+                            <th class="pb-3">Model</th>
+                            <th class="pb-3">API Key</th>
+                            <th class="pb-3">Status</th>
+                            <th class="pb-3">Usage</th>
+                            <th class="pb-3">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="manage-keys-body" class="text-slate-300">
+                        <!-- Rows injected via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <script>
         lucide.createIcons();
         const ADMIN_TOKEN = "changeme_local_only"; // In production, ask user to input this
 
+        let allKeys = []; // Store all keys for client-side search
+
         async function fetchStats() {
             try {
+                // Fetch stats (current keys in memory)
                 const res = await fetch('/status', {
                     headers: { 'x-proxy-admin': ADMIN_TOKEN }
                 });
@@ -138,8 +175,102 @@ HTML_TEMPLATE = """
                 const data = await res.json();
                 renderKeys(data.keys);
                 document.getElementById('key-count').innerText = data.keys.length;
+
+                // Also fetch all keys from DB for management table
+                fetchDBKeys();
             } catch (e) {
                 console.error(e);
+            }
+        }
+
+        async function fetchDBKeys() {
+            try {
+                const res = await fetch('/admin/keys', {
+                    headers: { 'x-proxy-admin': ADMIN_TOKEN }
+                });
+                if(res.ok) {
+                    allKeys = await res.json();
+                    renderManagementTable(allKeys);
+                }
+            } catch(e) {
+                console.error("DB Fetch Error:", e);
+            }
+        }
+
+        function renderManagementTable(keys) {
+            const tbody = document.getElementById('manage-keys-body');
+            const search = document.getElementById('search-input').value.toLowerCase();
+            
+            tbody.innerHTML = '';
+            
+            const filtered = keys.filter(k => 
+                (k.api && k.api.toLowerCase().includes(search)) || 
+                (k.provider && k.provider.toLowerCase().includes(search)) ||
+                (k.model && k.model.toLowerCase().includes(search))
+            );
+
+            filtered.forEach(k => {
+                const tr = document.createElement('tr');
+                tr.className = "border-b border-slate-800 hover:bg-slate-800/50 transition";
+                
+                const shortKey = k.api ? k.api.substring(0, 12) + "..." : "N/A";
+                
+                tr.innerHTML = `
+                    <td class="py-3 pl-2 text-sm text-slate-400">${k.id}</td>
+                    <td class="py-3 text-sm text-white font-mono">${k.provider}</td>
+                    <td class="py-3 text-sm text-slate-300">${k.model || '-'}</td>
+                    <td class="py-3 font-mono text-sm text-slate-500" title="${k.api}">${shortKey}</td>
+                    <td class="py-3 text-sm">
+                        <span class="${k.status === 'active' ? 'text-green-400' : 'text-red-400'}">
+                            ${k.status}
+                        </span>
+                    </td>
+                    <td class="py-3 text-sm text-slate-400">${k.usage_today || 0}</td>
+                    <td class="py-3 flex gap-2">
+                        <button onclick="deleteKey('${k.api}')" class="p-1 text-red-400 hover:bg-red-500/20 rounded">
+                            <i data-lucide="trash-2" class="h-4 w-4"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+            lucide.createIcons();
+        }
+
+        async function addKey() {
+            const api = prompt("Enter API Key:");
+            if(!api) return;
+            const provider = prompt("Provider (google/gemini):", "google");
+            
+            try {
+                const res = await fetch('/admin/keys', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'x-proxy-admin': ADMIN_TOKEN 
+                    },
+                    body: JSON.stringify({ api, provider, status: 'active', model: 'default' })
+                });
+                const data = await res.json();
+                alert(data.message || data.error);
+                fetchDBKeys();
+            } catch(e) {
+                alert("Error adding key");
+            }
+        }
+
+        async function deleteKey(api) {
+            if(!confirm("Delete this key?")) return;
+            try {
+                const res = await fetch(`/admin/keys/${api}`, {
+                    method: 'DELETE',
+                    headers: { 'x-proxy-admin': ADMIN_TOKEN }
+                });
+                const data = await res.json();
+                // alert(data.message || data.error);
+                fetchDBKeys();
+            } catch(e) {
+                alert("Error deleting key");
             }
         }
 
@@ -171,7 +302,7 @@ HTML_TEMPLATE = """
         }
 
         async function reloadKeys() {
-            if(confirm("Reload keys from database/file?")) {
+            if(confirm("Reload keys from database?")) {
                 await fetch('/reload-keys', { method: 'POST', headers: { 'x-proxy-admin': ADMIN_TOKEN } });
                 fetchStats();
             }
@@ -249,7 +380,106 @@ PROXY_MANAGER = ProxyManager()
 
 load_dotenv()
 
-APP = FastAPI(title="Local OpenAI-compatible -> Gemini proxy (with optional thinking chain)")
+APP = FastAPI(title="SalesmenChatbot API")
+
+@APP.get("/admin/keys")
+async def get_keys(x_proxy_admin: str = Header(None)):
+    if x_proxy_admin != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+    
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        rows = await conn.fetch("SELECT * FROM api_list ORDER BY id DESC")
+        await conn.close()
+        
+        # Convert rows to dicts
+        keys = []
+        for row in rows:
+            r = dict(row)
+            # Convert datetime to string
+            if r.get("last_used_at"):
+                r["last_used_at"] = str(r["last_used_at"])
+            keys.append(r)
+        return keys
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.post("/admin/keys")
+async def add_key(key: KeyCreate, x_proxy_admin: str = Header(None)):
+    if x_proxy_admin != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+    
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        await conn.execute("""
+            INSERT INTO api_list (provider, model, api, status, usage_today)
+            VALUES ($1, $2, $3, $4, 0)
+        """, key.provider, key.model, key.api, key.status)
+        await conn.close()
+        return {"message": "Key added successfully"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.put("/admin/keys/{api_key}")
+async def update_key(api_key: str, update: KeyUpdate, x_proxy_admin: str = Header(None)):
+    if x_proxy_admin != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+        
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    fields = []
+    values = []
+    idx = 1
+    
+    if update.status is not None:
+        fields.append(f"status = ${idx}")
+        values.append(update.status)
+        idx += 1
+    if update.model is not None:
+        fields.append(f"model = ${idx}")
+        values.append(update.model)
+        idx += 1
+    if update.provider is not None:
+        fields.append(f"provider = ${idx}")
+        values.append(update.provider)
+        idx += 1
+        
+    if not fields:
+        return {"message": "No fields to update"}
+        
+    values.append(api_key)
+    
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        query = f"UPDATE api_list SET {', '.join(fields)} WHERE api = ${idx}"
+        await conn.execute(query, *values)
+        await conn.close()
+        return {"message": "Key updated successfully"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@APP.delete("/admin/keys/{api_key}")
+async def delete_key(api_key: str, x_proxy_admin: str = Header(None)):
+    if x_proxy_admin != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid Admin Token")
+        
+    if not POSTGRES_URL:
+        return {"error": "PostgreSQL not configured"}
+        
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        await conn.execute("DELETE FROM api_list WHERE api = $1", api_key)
+        await conn.close()
+        return {"message": "Key deleted successfully"}
+    except Exception as e:
+        return {"error": str(e)}
 
 # -------------------------
 # Security: API Key Validation Middleware
@@ -387,6 +617,13 @@ DEFAULT_RPD = 20 # Strictly limited to 20 RPD as requested
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# Postgres Config
+POSTGRES_URL = os.getenv("POSTGRES_URL") # postgresql://user:pass@host:port/db
+
+async def init_postgres():
+    # api_list table already exists, no need to create gemini_api_keys
+    pass
+
 # Force enabling of thinking chain parameters
 ENABLE_THINKING_CHAIN = False
 '''
@@ -455,6 +692,32 @@ def load_keys_from_supabase() -> List[Dict[str, Any]]:
         print(f"Error loading keys from Supabase: {e}")
         return []
 
+async def load_keys_from_postgres() -> List[Dict[str, Any]]:
+    if not POSTGRES_URL:
+        return []
+    try:
+        conn = await asyncpg.connect(POSTGRES_URL)
+        # Select keys from api_list where provider is google or gemini
+        rows = await conn.fetch("""
+            SELECT api as key, usage_today as usage_count_day, last_used_at 
+            FROM api_list 
+            WHERE (provider ILIKE '%google%' OR provider ILIKE '%gemini%') 
+            AND status = 'active'
+        """)
+        await conn.close()
+        
+        keys_data = []
+        for row in rows:
+            keys_data.append({
+                "key": row["key"],
+                "usage_day": row["usage_count_day"] or 0,
+                "last_used": str(row["last_used_at"]) if row["last_used_at"] else ""
+            })
+        return keys_data
+    except Exception as e:
+        print(f"Error loading keys from Postgres: {e}")
+        return []
+
 def load_keys_from_file(path: str) -> List[Dict[str, Any]]:
     if not os.path.exists(path):
         return []
@@ -463,15 +726,16 @@ def load_keys_from_file(path: str) -> List[Dict[str, Any]]:
         return [{"key": line.strip(), "usage_day": 0} for line in f if line.strip()]
 
 # Load keys
-KEYS_DATA = load_keys_from_supabase()
-if not KEYS_DATA:
-    print("Trying to load keys from file...")
-    KEYS_DATA = load_keys_from_file(KEYS_FILE)
+# KEYS_DATA = load_keys_from_supabase()
+# if not KEYS_DATA:
+#     print("Trying to load keys from file...")
+#     KEYS_DATA = load_keys_from_file(KEYS_FILE)
 
-if not KEYS_DATA:
-    raise RuntimeError("No API keys found in Supabase or file.")
+# if not KEYS_DATA:
+#     raise RuntimeError("No API keys found in Supabase or file.")
 
-print(f"Loaded {len(KEYS_DATA)} keys.")
+# print(f"Loaded {len(KEYS_DATA)} keys.")
+KEYS_DATA = []
 
 from datetime import datetime, timezone
 
@@ -558,6 +822,20 @@ class KeyState:
         asyncio.create_task(self.update_usage_in_db())
 
     async def update_usage_in_db(self):
+        # Update Postgres if configured
+        if POSTGRES_URL:
+            try:
+                conn = await asyncpg.connect(POSTGRES_URL)
+                # Update usage_today in api_list table
+                await conn.execute("""
+                    UPDATE api_list 
+                    SET usage_today = $1, last_used_at = NOW() 
+                    WHERE api = $2
+                """, self.usage_day, self.key)
+                await conn.close()
+            except Exception as e:
+                print(f"Postgres Update Error: {e}")
+
         if not SUPABASE_URL or not SUPABASE_KEY:
             return
         try:
@@ -641,7 +919,35 @@ class KeyPool:
         return out
 
 
-POOL = KeyPool(KEYS_DATA)
+POOL = KeyPool([])
+
+@APP.on_event("startup")
+async def startup_event():
+    global POOL
+    
+    # Init DB
+    await init_postgres()
+    
+    # Load keys
+    print("Loading keys...")
+    keys = await load_keys_from_postgres()
+    
+    if not keys:
+        print("No keys in Postgres, trying Supabase...")
+        # Since Supabase load is sync, we run it in executor just in case
+        loop = asyncio.get_event_loop()
+        keys = await loop.run_in_executor(None, load_keys_from_supabase)
+        
+    if not keys:
+        print("No keys in Supabase, trying file...")
+        keys = load_keys_from_file(KEYS_FILE)
+        
+    if not keys:
+        print("WARNING: No keys found in any source!")
+        keys = []
+        
+    POOL = KeyPool(keys)
+    print(f"Startup complete. Loaded {len(keys)} keys.")
 
 # -------------------------
 # Upstream streaming

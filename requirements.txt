@@ -5,3 +5,4 @@ supabase
 python-dotenv
 free-proxy
 python-multipart
+asyncpg

@@ -15,7 +15,7 @@ import httpx
 import logging
 
 log = logging.getLogger("uvicorn")
-APP = FastAPI(title="Native Gemini proxy (auth-mode auto-detect)")
+APP = FastAPI(title="SalesmenChatbot API")
 
 # -------------------------
 # Config
