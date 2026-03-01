@@ -479,24 +479,21 @@ async def get_keys(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not POSTGRES_URL:
-        return {"error": "PostgreSQL not configured"}
+        return []
         
     try:
         conn = await asyncpg.connect(POSTGRES_URL)
-        rows = await conn.fetch("SELECT * FROM api_list ORDER BY id DESC")
+        # Fetching all keys from api_list table as requested
+        rows = await conn.fetch("SELECT id, provider, model, api, status, usage_today FROM api_list ORDER BY id DESC")
         await conn.close()
         
-        # Convert rows to dicts
         keys = []
         for row in rows:
-            r = dict(row)
-            # Convert datetime to string
-            if r.get("last_used_at"):
-                r["last_used_at"] = str(r["last_used_at"])
-            keys.append(r)
+            keys.append(dict(row))
         return keys
     except Exception as e:
-        return {"error": str(e)}
+        print(f"DB Error: {e}")
+        return []
 
 @APP.post("/admin/keys")
 async def add_key(key: KeyCreate, request: Request):
