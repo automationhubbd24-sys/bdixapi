@@ -877,8 +877,8 @@ async def proxy(request: Request, full_path: str):
         body_json = json.loads(body_bytes)
         # Map our custom model name to a real Gemini model
         if "model" in body_json:
-            # You can change 'gemini-1.5-flash' to 'gemini-1.5-pro' if needed
-            body_json["model"] = "gemini-1.5-flash"
+            # You can change 'gemini-2.0-flash' to 'gemini-1.5-pro' if needed
+            body_json["model"] = "gemini-2.0-flash"
         content = json.dumps(body_json).encode('utf-8')
     except:
         content = body_bytes
@@ -900,7 +900,11 @@ async def proxy(request: Request, full_path: str):
                                 yield err_body
                             else:
                                 key_state.mark_success()
-                                async for chunk in upstream.aiter_bytes(): yield chunk
+                                async for chunk in upstream.aiter_bytes():
+                                    # For stream, we should also try to replace model name in the JSON chunks
+                                    if b'"model":"' in chunk:
+                                        chunk = chunk.replace(b'"gemini-2.0-flash"', b'"salesmanchatbot-pro"')
+                                    yield chunk
                 return StreamingResponse(stream_gen(), media_type="text/event-stream")
             else:
                 resp = await client.request(request.method, url, headers=headers, content=content)
@@ -910,7 +914,15 @@ async def proxy(request: Request, full_path: str):
                     return JSONResponse(status_code=resp.status_code, content=resp.json() if "application/json" in resp.headers.get("content-type", "") else {"error": resp.text})
                 
                 key_state.mark_success()
-                return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+                
+                # Intercept response to replace model name back to salesmanchatbot-pro
+                try:
+                    resp_json = resp.json()
+                    if "model" in resp_json:
+                        resp_json["model"] = "salesmanchatbot-pro"
+                    return JSONResponse(content=resp_json, status_code=resp.status_code)
+                except:
+                    return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
         except Exception as e:
             key_state.mark_failure()
             return JSONResponse({"error": str(e)}, 502)
