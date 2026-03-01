@@ -32,23 +32,25 @@ VPN_PROXY_URL = os.getenv("VPN_PROXY_URL")
 UPSTREAM_BASE_GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
 DEFAULT_RPM = 5
+DEFAULT_RPH = 60 # Default RPH (Requests Per Hour)
 DEFAULT_RPD = 20
 BACKOFF_MIN = 5
 BACKOFF_MAX = 600
 ENABLE_THINKING_CHAIN = False
 KEYS_FILE = "api_keys.txt"
 
-# --- Models ---
-class KeyCreate(BaseModel):
-    api: str
-    provider: str = "google"
-    model: str = "default"
-    status: str = "active"
+# Global configuration store
+GLOBAL_CONFIG = {
+    "rpm": DEFAULT_RPM,
+    "rph": DEFAULT_RPH,
+    "rpd": DEFAULT_RPD
+}
 
-class KeyUpdate(BaseModel):
-    status: Optional[str] = None
-    model: Optional[str] = None
-    provider: Optional[str] = None
+# --- Models ---
+class ConfigUpdate(BaseModel):
+    rpm: int
+    rph: int
+    rpd: int
 
 # --- HTML Templates ---
 LOGIN_TEMPLATE = """
@@ -144,7 +146,7 @@ HTML_TEMPLATE = """
             </div>
         </header>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div class="card">
                 <div class="flex justify-between items-start">
                     <div>
@@ -154,13 +156,28 @@ HTML_TEMPLATE = """
                     <div class="p-2 bg-blue-500/10 rounded-lg"><i data-lucide="key" class="h-6 w-6 text-blue-500"></i></div>
                 </div>
             </div>
-            <div class="card">
-                 <div class="flex justify-between items-start">
+            
+            <!-- Global Limits Card -->
+            <div class="card md:col-span-2">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                        <i data-lucide="settings" class="h-5 w-5 text-blue-400"></i> Global Gemini Limits
+                    </h3>
+                    <button onclick="updateGlobalConfig()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded transition">Save Limits</button>
+                </div>
+                <div class="grid grid-cols-3 gap-4">
                     <div>
-                        <p class="text-slate-400 text-sm">System Health</p>
-                        <h3 class="text-lg font-bold text-green-400 mt-2" id="system-health">Operational</h3>
+                        <label class="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">RPM (Minute)</label>
+                        <input type="number" id="global-rpm" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500">
                     </div>
-                    <div class="p-2 bg-green-500/10 rounded-lg"><i data-lucide="cpu" class="h-6 w-6 text-green-500"></i></div>
+                    <div>
+                        <label class="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">RPH (Hour)</label>
+                        <input type="number" id="global-rph" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">RPD (Day)</label>
+                        <input type="number" id="global-rpd" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500">
+                    </div>
                 </div>
             </div>
         </div>
@@ -272,6 +289,15 @@ HTML_TEMPLATE = """
 
         async function fetchStats() {
             try {
+                // Fetch config first
+                const configRes = await fetch('/admin/config');
+                if(configRes.ok) {
+                    const config = await configRes.json();
+                    document.getElementById('global-rpm').value = config.rpm;
+                    document.getElementById('global-rph').value = config.rph;
+                    document.getElementById('global-rpd').value = config.rpd;
+                }
+
                 const res = await fetch('/status');
                 if(!res.ok) { if(res.status === 401) window.location.href = '/admin/login'; return; }
                 const data = await res.json();
@@ -282,6 +308,26 @@ HTML_TEMPLATE = """
                 }
                 fetchDBKeys();
             } catch (e) { console.error(e); }
+        }
+
+        async function updateGlobalConfig() {
+            const rpm = parseInt(document.getElementById('global-rpm').value);
+            const rph = parseInt(document.getElementById('global-rph').value);
+            const rpd = parseInt(document.getElementById('global-rpd').value);
+            
+            try {
+                const res = await fetch('/admin/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rpm, rph, rpd })
+                });
+                if(res.ok) {
+                    alert("Global limits updated successfully!");
+                    fetchStats();
+                } else {
+                    alert("Failed to update limits");
+                }
+            } catch(e) { alert("Error: " + e.message); }
         }
 
         async function fetchDBKeys() {
@@ -482,26 +528,45 @@ class KeyState:
         self.banned_until: float = 0.0
         self.success: int = 0
         self.fail: int = 0
-        self.rpm_limit = DEFAULT_RPM
-        self.rpd_limit = DEFAULT_RPD
         self.usage_minute = 0
+        self.usage_hour = 0
         self.usage_day = key_data.get("usage_day", 0)
         self.minute_start_time = time.time()
+        self.hour_start_time = time.time()
         self.last_check_date = datetime.now(timezone.utc).date()
 
     def is_available(self) -> bool:
         now = time.time()
         today = datetime.now(timezone.utc).date()
+        
+        # New Day Reset
         if today > self.last_check_date:
             self.usage_day = 0
             self.last_check_date = today
+            
+        # Minute Reset
         if now - self.minute_start_time >= 60:
             self.usage_minute = 0
             self.minute_start_time = now
-        return now >= self.banned_until and self.usage_minute < self.rpm_limit and self.usage_day < self.rpd_limit
+            
+        # Hour Reset
+        if now - self.hour_start_time >= 3600:
+            self.usage_hour = 0
+            self.hour_start_time = now
+            
+        # Check against GLOBAL_CONFIG
+        rpm_limit = GLOBAL_CONFIG.get("rpm", DEFAULT_RPM)
+        rph_limit = GLOBAL_CONFIG.get("rph", DEFAULT_RPH)
+        rpd_limit = GLOBAL_CONFIG.get("rpd", DEFAULT_RPD)
+        
+        return (now >= self.banned_until and 
+                self.usage_minute < rpm_limit and 
+                self.usage_hour < rph_limit and 
+                self.usage_day < rpd_limit)
 
     def mark_picked(self):
         self.usage_minute += 1
+        self.usage_hour += 1
         self.usage_day += 1
 
     def mark_success(self):
@@ -558,19 +623,65 @@ def is_authenticated(request: Request):
 
 @APP.on_event("startup")
 async def startup():
-    global POOL
+    global POOL, GLOBAL_CONFIG
     if POSTGRES_URL:
-        conn = await asyncpg.connect(POSTGRES_URL)
-        rows = await conn.fetch("SELECT api as key, usage_today as usage_day FROM api_list WHERE (provider ILIKE '%google%' OR provider ILIKE '%gemini%') AND status = 'active'")
-        await conn.close()
-        POOL = KeyPool([dict(r) for r in rows])
+        try:
+            conn = await asyncpg.connect(POSTGRES_URL)
+            # 1. Create global_config table if not exists
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS global_config (
+                    key TEXT PRIMARY KEY,
+                    value JSONB
+                )
+            """)
+            
+            # 2. Load or Init Global Limits
+            config_row = await conn.fetchrow("SELECT value FROM global_config WHERE key = 'gemini_limits'")
+            if config_row:
+                GLOBAL_CONFIG.update(json.loads(config_row['value']))
+            else:
+                await conn.execute("INSERT INTO global_config (key, value) VALUES ('gemini_limits', $1)", json.dumps(GLOBAL_CONFIG))
+            
+            # 3. Load Keys
+            rows = await conn.fetch("SELECT api as key, usage_today as usage_day FROM api_list WHERE (provider ILIKE '%google%' OR provider ILIKE '%gemini%') AND status = 'active'")
+            await conn.close()
+            POOL = KeyPool([dict(r) for r in rows])
+        except Exception as e:
+            print(f"Startup Error: {e}")
+
+@APP.get("/admin/config")
+async def get_config(request: Request):
+    return GLOBAL_CONFIG
+
+@APP.post("/admin/config")
+async def update_config(update: ConfigUpdate, request: Request):
+    global GLOBAL_CONFIG
+    GLOBAL_CONFIG["rpm"] = update.rpm
+    GLOBAL_CONFIG["rph"] = update.rph
+    GLOBAL_CONFIG["rpd"] = update.rpd
+    
+    if POSTGRES_URL:
+        try:
+            conn = await asyncpg.connect(POSTGRES_URL)
+            await conn.execute("UPDATE global_config SET value = $1 WHERE key = 'gemini_limits'", json.dumps(GLOBAL_CONFIG))
+            await conn.close()
+        except: pass
+    return {"message": "Config updated"}
+
+@APP.post("/admin/keys")
+async def add_key(key: KeyCreate):
+    if not POSTGRES_URL: return {"error": "No DB"}
+    conn = await asyncpg.connect(POSTGRES_URL)
+    await conn.execute("INSERT INTO api_list (provider, model, api, status, usage_today) VALUES ($1, $2, $3, $4, 0)", key.provider, key.model, key.api, key.status)
+    await conn.close()
+    return {"message": "Key added"}
 
 @APP.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if path.startswith("/admin") or path in ["/status", "/reload-keys"]:
         if path not in ["/admin/login", "/admin/logout"] and not is_authenticated(request):
-            if path.startswith("/admin/keys"): return JSONResponse({"error": "Unauthorized"}, 401)
+            if path.startswith("/admin/keys") or path.startswith("/admin/config"): return JSONResponse({"error": "Unauthorized"}, 401)
             return RedirectResponse("/admin/login")
     return await call_next(request)
 
