@@ -182,10 +182,11 @@ HTML_TEMPLATE = """
                                 <th class="pb-2 pl-2">Node ID</th>
                                 <th class="pb-2">Status</th>
                                 <th class="pb-2">Success</th>
-                                <th class="pb-2">Failures</th>
+                                <th class="pb-2" title="Failed requests (Rate limits or API errors)">Failures <i data-lucide="help-circle" class="h-3 w-3 inline-block opacity-50"></i></th>
                                 <th class="pb-2">Latency (avg)</th>
-                            </tr>
-                        </thead>
+                            <th class="pb-2">Action</th>
+                        </tr>
+                    </thead>
                         <tbody id="keys-table-body" class="text-slate-300 text-sm"></tbody> <!-- Smaller text -->
                     </table>
                 </div>
@@ -395,11 +396,20 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                alert("Copied to clipboard!");
+            } catch (err) {
+                console.error('Failed to copy: ', err);
+            }
+        }
+
         async function copyKey(id) {
             try {
                 const res = await fetch(`/admin/keys/id/${id}/reveal`);
                 const data = await res.json();
-                if(data.api) { await navigator.clipboard.writeText(data.api); alert("Copied!"); }
+                if(data.api) { copyToClipboard(data.api); }
             } catch(e) { alert("Failed: " + e.message); }
         }
 
@@ -445,7 +455,13 @@ HTML_TEMPLATE = """
                     <td class="py-3 text-xs text-green-400">${k.success}</td>
                     <td class="py-3 text-xs text-red-400">${k.fail}</td>
                     <td class="py-3 text-xs text-slate-500">-</td>
+                    <td class="py-3">
+                        <button onclick="copyToClipboard('${k.full_key}')" class="p-1 hover:text-blue-400 transition" title="Copy Full Key">
+                            <i data-lucide="copy" class="h-3 w-3"></i>
+                        </button>
+                    </td>
                 </tr>`).join('');
+            lucide.createIcons();
         }
         
         async function checkHealth() { const res = await fetch('/health'); const data = await res.json(); alert(JSON.stringify(data, null, 2)); }
@@ -521,6 +537,7 @@ class KeyPool:
     def status(self):
         now = time.monotonic()
         return [{
+            "full_key": s.key,
             "key_preview": s.key[:8] + "...",
             "available_in": max(0, round(s.banned_until - now, 2)),
             "success": s.success,
