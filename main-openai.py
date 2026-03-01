@@ -52,6 +52,17 @@ class ConfigUpdate(BaseModel):
     rph: int
     rpd: int
 
+class KeyCreate(BaseModel):
+    api: str
+    provider: str = "google"
+    model: str = "default"
+    status: str = "active"
+
+class KeyUpdate(BaseModel):
+    status: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+
 # --- HTML Templates ---
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
