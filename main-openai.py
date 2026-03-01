@@ -1059,11 +1059,12 @@ async def proxy(request: Request, full_path: str):
     if "models" in full_path and request.method == "GET":
         return {"object": "list", "data": [{"id": "salesmanchatbot-pro", "object": "model", "owned_by": "salesmenchatbot-ai"}]}
 
-    key_state = await POOL.next_available()
-    if not key_state: return JSONResponse({"error": "No keys available"}, 429)
-
-    headers = {k:v for k,v in request.headers.items() if k.lower() not in ("host","content-length","transfer-encoding","connection")}
-    headers["Authorization"] = f"Bearer {key_state.key}"
+    tried: List[str] = []
+    headers_base = {k:v for k,v in request.headers.items() if k.lower() not in ("host","content-length","transfer-encoding","connection")}
+    if not any(k.lower() == "content-type" for k in headers_base):
+        ct = request.headers.get("content-type")
+        if ct:
+            headers_base["Content-Type"] = ct
     
     # Read and modify body to ensure valid Gemini model
     body_bytes = await request.body()
@@ -1083,77 +1084,70 @@ async def proxy(request: Request, full_path: str):
     
     url = f"{UPSTREAM_BASE_GEMINI}/openai/{full_path.replace('v1/', '')}"
     
-    proxy_url = await get_proxy_url()
-    async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as client:
+    if is_stream:
+        key_state = await POOL.next_available()
+        if not key_state:
+            return JSONResponse({"error": "No keys available"}, 429)
+        tried.append(key_state.key[:8] + "...")
+        headers = dict(headers_base)
+        headers["Authorization"] = f"Bearer {key_state.key}"
+        proxy_url = await get_proxy_url()
+        async def stream_gen():
+            async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as stream_client:
+                async with stream_client.stream(request.method, url, headers=headers, content=content) as upstream:
+                    if upstream.status_code >= 400:
+                        key_state.mark_failure()
+                        err_body = await upstream.aread()
+                        yield err_body
+                    else:
+                        key_state.mark_success()
+                        async for chunk in upstream.aiter_bytes():
+                            if b'"model":"' in chunk:
+                                chunk = chunk.replace(b'"gemini-2.5-flash-lite"', b'"salesmanchatbot-pro"')
+                            yield chunk
+        return StreamingResponse(stream_gen(), media_type="text/event-stream")
+
+    for _ in range(len(POOL.states) if POOL.states else 0):
+        key_state = await POOL.next_available()
+        if not key_state:
+            break
+        tried.append(key_state.key[:8] + "...")
+        headers = dict(headers_base)
+        headers["Authorization"] = f"Bearer {key_state.key}"
+        proxy_url = await get_proxy_url()
         try:
-            if is_stream:
-                async def stream_gen():
-                    # Keep client alive for the duration of the stream
-                    async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as stream_client:
-                        async with stream_client.stream(request.method, url, headers=headers, content=content) as upstream:
-                            if upstream.status_code >= 400:
-                                key_state.mark_failure()
-                                err_body = await upstream.aread()
-                                yield err_body
-                            else:
-                                key_state.mark_success()
-                                async for chunk in upstream.aiter_bytes():
-                                    # For stream, we should also try to replace model name in the JSON chunks
-                                    if b'"model":"' in chunk:
-                                        chunk = chunk.replace(b'"gemini-2.5-flash-lite"', b'"salesmanchatbot-pro"')
-                                    yield chunk
-                return StreamingResponse(stream_gen(), media_type="text/event-stream")
-            else:
+            async with httpx.AsyncClient(timeout=300, verify=False, proxy=proxy_url) as client:
                 resp = await client.request(request.method, url, headers=headers, content=content)
-                if resp.status_code >= 400:
-                    key_state.mark_failure()
-                    try:
-                        err_payload = resp.json()
-                        err_msg = err_payload.get("error", {}).get("message") or err_payload.get("error") or resp.text
-                    except:
-                        err_msg = resp.text
-                    return JSONResponse(status_code=200, content={
-                        "id": f"err_{int(time.time())}",
-                        "object": "chat.completion",
-                        "created": int(time.time()),
-                        "model": "salesmanchatbot-pro",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
-                                "finish_reason": "stop"
-                            }
-                        ],
-                        "error": err_msg
-                    })
-                
-                key_state.mark_success()
-                
-                # Intercept response to replace model name back to salesmanchatbot-pro
-                try:
-                    resp_json = resp.json()
-                    if "model" in resp_json:
-                        resp_json["model"] = "salesmanchatbot-pro"
-                    return JSONResponse(content=resp_json, status_code=resp.status_code)
-                except:
-                    return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
-        except Exception as e:
+            if resp.status_code >= 400:
+                key_state.mark_failure()
+                continue
+            key_state.mark_success()
+            try:
+                resp_json = resp.json()
+                if "model" in resp_json:
+                    resp_json["model"] = "salesmanchatbot-pro"
+                return JSONResponse(content=resp_json, status_code=resp.status_code)
+            except:
+                return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+        except Exception:
             key_state.mark_failure()
-            err_msg = str(e)
-            return JSONResponse(status_code=200, content={
-                "id": f"err_{int(time.time())}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": "salesmanchatbot-pro",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
-                        "finish_reason": "stop"
-                    }
-                ],
-                "error": err_msg
-            })
+            continue
+
+    err_msg = f"all keys failed; tried={tried}"
+    return JSONResponse(status_code=200, content={
+        "id": f"err_{int(time.time())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "salesmanchatbot-pro",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": f"ERROR: {err_msg}"},
+                "finish_reason": "stop"
+            }
+        ],
+        "error": err_msg
+    })
 
 if __name__ == "__main__":
     import uvicorn
